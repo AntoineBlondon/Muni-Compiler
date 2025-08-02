@@ -584,7 +584,6 @@ class Parser:
             next_min = prec + (1 if assoc == "left" else 0)
             rhs = self.parse_expr(next_min)
             lhs = self.ast.BinOp(op, lhs, rhs)
-
         return lhs
     
     def parse_unary(self):
@@ -645,15 +644,21 @@ class Parser:
             self.next()
             # call‐lookahead
             type_args = []
+            is_function = True
+            save = self.pos
             if self.peek() == "LT":
                 self.next()
                 while True:
-                    type_args.append(self.parse_type_expr())
-                    if self.peek()=="COMMA":
-                        self.next(); continue
-                    break
-                self.expect("GT")
-            if self.peek() == "LPAREN":
+                    try: 
+                        type_args.append(self.parse_type_expr())
+                        if self.peek()=="COMMA":
+                            self.next(); continue
+                        break
+                    except:
+                        is_function = False
+                        break
+                if is_function: self.expect("GT")
+            if self.peek() == "LPAREN" and is_function:
                 # it's a FuncCall expression
                 self.next()  # consume "("
                 args = []
@@ -666,6 +671,7 @@ class Parser:
                 self.expect("RPAREN")
                 node = self.ast.FunctionCall(name, type_args, args, pos=(line,col))
             else:
+                self.pos = save
                 node = self.ast.Ident(name, pos=(line,col))
             # 1) any number of “.field” or “.method(...)”
             while self.peek() == "DOT":
@@ -700,7 +706,6 @@ class Parser:
         raise SyntaxError(f"{line}:{col}: Unexpected token in primary: {kind}")
 
     def parse_type_expr(self):
-        # caller must have peek()=="IDENT"
         if self.peek() in ["INT_KW", "VOID_KW", "BOOL_KW"]:
             name = {"INT_KW": "int", "VOID_KW": "void", "BOOL_KW": "boolean"}[self.next().kind]
             return self.ast.TypeExpr(name)
