@@ -7,4 +7,12 @@ structure math
         }
         return base * math.pow(base, exp - 1);
     }
+
+    static int fibonnacci(int number)
+    {
+        if (number <= 2) {
+            return 1;
+        }
+        return math.fibonnacci(number - 1) + math.fibonnacci(number - 2);
+    }
 }

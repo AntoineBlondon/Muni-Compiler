@@ -21,7 +21,8 @@ from .ast import (
     MemberAccess,
     MemberAssignment,
     MethodDeclaration,
-    MethodCall
+    MethodCall,
+    NullLiteral,
 )
 
 class CodeGen:
@@ -43,7 +44,7 @@ class CodeGen:
             "(module",
             '  (import "env" "print" (func $print (param i32)))',
             "  (memory $mem 1)",
-            "  (global $heap (mut i32) (i32.const 0))",
+            "  (global $heap (mut i32) (i32.const 4))",
             "  (func $malloc (param $n i32) (result i32)",
             "    global.get $heap",
             "    global.get $heap",
@@ -86,35 +87,54 @@ class CodeGen:
 
     def gen_method(self, struct_name: str, m: MethodDeclaration):
         self.locals = []
-        self.code = []
+        self.code   = []
 
-        # parameters
+        # 1) figure out if this is (a) an instance-method or (b) our constructor
+        is_instance    = not m.is_static
+        is_constructor = m.is_static and m.name == struct_name
+
+        # 2) build the parameter list
         params = []
-        if not m.is_static:
+        if is_instance or is_constructor:
             params.append("(param $this i32)")
         for pname, _ in m.params:
             params.append(f"(param ${pname} i32)")
+
+        # 3) return signature
         result_decl = "" if m.return_type == "void" else "(result i32)"
 
-        # collect locals
+        # 4) gather locals (excluding parameters)
         for s in m.body:
             if isinstance(s, VariableDeclaration) and s.type != "void":
                 self.locals.append(s.name)
+        # a scratch local for things like `do { … }`
         self.locals.append("__struct_ptr")
+
         locals_decl = " ".join(f"(local ${n} i32)" for n in self.locals)
 
-        # header
-        hdr = f"  (func ${struct_name}_{m.name} {' '.join(params)} {result_decl} {locals_decl}"
-        self.out.append(hdr)
+        # 5) emit the function header
+        header = f"  (func ${struct_name}_{m.name} {' '.join(params)} {result_decl} {locals_decl}"
+        self.out.append(header)
 
-        # body
-        for s in m.body:
-            self.gen_stmt(s)
+        # 6) emit the body
+        for stmt in m.body:
+            self.gen_stmt(stmt)
 
-        # tail
-        self.emit("return" if m.return_type == "void" else "unreachable")
+        # 7) emit the tail
+        if is_constructor:
+            # constructors implicitly return `this`
+            self.emit("local.get $this")
+            self.emit("return")
+        elif m.return_type == "void":
+            self.emit("return")
+        else:
+            # non-void methods must return explicitly on every path, unreachable otherwise
+            self.emit("unreachable")
+
+        # 8) splice in the generated instructions and close
         self.out.extend(self.code)
         self.out.append("  )")
+
 
     def gen_func(self, func: FunctionDeclaration):
         self.locals = ["__struct_ptr"]
@@ -398,6 +418,8 @@ class CodeGen:
             self.emit(f"i32.const {expr.value}")
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
+        elif isinstance(expr, NullLiteral):
+            self.emit("i32.const 0")
         elif isinstance(expr, Ident):
             self.emit(f"local.get ${expr.name}")
         elif isinstance(expr, UnaryOp):

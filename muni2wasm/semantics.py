@@ -20,7 +20,8 @@ from .ast import (
     StructureDeclaration,
     MemberAccess,
     MemberAssignment,
-    MethodCall
+    MethodCall,
+    NullLiteral,
 )
 
 class SemanticError(Exception):
@@ -34,81 +35,101 @@ class SemanticError(Exception):
         return self.message
 
 def check(program: Program):
-    # Partition top-level decls into functions and loose statements
+    # --- collect top-level ---
     func_decls = [d for d in program.decls if isinstance(d, FunctionDeclaration)]
-    stmts     = [d for d in program.decls if not isinstance(d, (FunctionDeclaration, StructureDeclaration))]
-    # collect structure definitions
+    stmts      = [d for d in program.decls if not isinstance(d, (FunctionDeclaration, StructureDeclaration))]
+
+    # --- collect struct defs ---
     structs: dict[str, StructureDeclaration] = {}
     for d in program.decls:
         if isinstance(d, StructureDeclaration):
             if d.name in structs:
                 raise SemanticError(f"Structure '{d.name}' redefined", d.pos)
             structs[d.name] = d
-    
+
+    # --- compute memory layouts for constructors ---
     struct_layouts = {
         name: {
-            "size": len(d.fields)*4,
+            "size":    len(d.fields)*4,
             "offsets": { f.name: i*4 for i,f in enumerate(d.fields) }
         }
         for name,d in structs.items()
     }
 
-
-
-    # Build function signature table
+    # --- build global function signatures (including print) ---
     func_sigs: dict[str, tuple[list[str], str]] = {}
-    func_sigs["print"] = ( ["*"], "void" )
+    func_sigs["print"] = ( ["*"], "void" )   # print(*) → void
+
     for fd in func_decls:
         if fd.name in func_sigs:
             raise SemanticError(f"Function '{fd.name}' redefined", fd.pos)
         func_sigs[fd.name] = ([ty for _,ty in fd.params], fd.return_type)
-    
 
+    # --- check each struct’s methods ---
     for struct_name, sd in structs.items():
         for m in sd.methods:
-            sym = {pname:pty for pname,pty in m.params}
-            sym['this'] = struct_name
+            # build the method’s symbol table
+            sym = { pname: pty for pname,pty in m.params }
+
+            # only instance‐methods or constructors get a `this`
+            is_instance    = not m.is_static
+            is_constructor = m.is_static and m.name == struct_name
+
+            if is_instance or is_constructor:
+                sym['this'] = struct_name
+
+            # type‐check the body
             check_block(m.body, sym, func_sigs, m.return_type, structs, struct_layouts)
-            if m.return_type != "void" and not block_returns(m.body):
+
+            # methods that return non‐void must return on every path,
+            # *except* our constructor (we’ll implicitly return `this`)
+            if m.return_type != "void" and not is_constructor and not block_returns(m.body):
                 raise SemanticError(
                     f"Method '{struct_name}.{m.name}' may exit without returning a value",
                     m.pos
                 )
 
-
-    # If there's a 'main', disallow loose statements
+    # --- top-level vs script mode ---
     if "main" in func_sigs and stmts:
         first = stmts[0]
-        raise SemanticError("Top-level statements not allowed when 'main' is defined", first.pos)
-
-    # Script mode: no main, but loose stmts → treat as implicit void main
+        raise SemanticError(
+            "Top-level statements not allowed when 'main' is defined", first.pos
+        )
     if stmts and "main" not in func_sigs:
         check_block(stmts, {}, func_sigs, "void", structs, struct_layouts)
 
+    # --- finally, check every free function body ---
     for fd in func_decls:
-        symbol_table = {name: ty for name,ty in fd.params}
-        check_block(fd.body, symbol_table, func_sigs, fd.return_type, structs, struct_layouts)
-
-        
+        sym = {name: ty for name,ty in fd.params}
+        check_block(fd.body, sym, func_sigs, fd.return_type, structs, struct_layouts)
         if fd.return_type != "void" and not block_returns(fd.body):
             raise SemanticError(
-                f"Function '{fd.name}' may exit without returning a value",
-                fd.pos
+                f"Function '{fd.name}' may exit without returning a value", fd.pos
             )
 
 
-
-def check_block(stmts, symbol_table, func_sigs, expected_ret, structs, struct_layouts, in_loop=False):
+def check_block(stmts, symbol_table, func_sigs, expected_ret,
+                structs, struct_layouts, in_loop=False):
     def infer(expr):
         pos = getattr(expr, "pos", None)
+
+        # --- primitives ---
         if isinstance(expr, Number):
             return "int"
         if isinstance(expr, BooleanLiteral):
             return "boolean"
+
+        # --- null literal (`void`) ---
+        if isinstance(expr, NullLiteral):
+            return "*"   # wildcard pointer
+
+        # --- local var or `this` ---
         if isinstance(expr, Ident):
             if expr.name not in symbol_table:
                 raise SemanticError(f"Undefined variable '{expr.name}'", pos)
             return symbol_table[expr.name]
+
+        # --- unary / binary ops ---
         if isinstance(expr, UnaryOp):
             t = infer(expr.expr)
             if expr.op == "!":
@@ -120,87 +141,77 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret, structs, struct_la
                     raise SemanticError(f"Unary '-' expects int, got {t}", pos)
                 return "int"
             raise SemanticError(f"Unknown unary operator '{expr.op}'", pos)
+
         if isinstance(expr, BinOp):
             lt = infer(expr.left)
             rt = infer(expr.right)
-            op = expr.op
-            if op in {"+","-","*","/","%"}:
+            if expr.op in {"+","-","*","/","%"}:
                 if lt == rt == "int":
                     return "int"
-                raise SemanticError(f"Arithmetic '{op}' expects ints, got {lt},{rt}", pos)
-            if op in {"<",">","<=",">=","==","!="}:
+                raise SemanticError(f"Arithmetic '{expr.op}' expects ints, got {lt},{rt}", pos)
+            if expr.op in {"<",">","<=",">="}:
                 if lt == rt == "int":
                     return "boolean"
-                raise SemanticError(f"Comparison '{op}' expects ints, got {lt},{rt}", pos)
-            if op in {"&&","||"}:
+                raise SemanticError(f"Comparison '{expr.op}' expects ints, got {lt},{rt}", pos)
+            # pointer‐ or int‐equality
+            if expr.op in ("==","!="):
+                # ints compare among themselves, or pointers among themselves/null
+                if lt == rt or (lt == "*" and rt not in ("int","boolean")) or (rt == "*" and lt not in ("int","boolean")):
+                    return "boolean"
+                raise SemanticError(f"Cannot compare {lt} {expr.op} {rt}", pos)
+            # ordered comparisons only on ints
+            if expr.op in ("<",">","<=",">="):
+                if lt == rt == "int":
+                    return "boolean"
+                raise SemanticError(f"Comparison '{expr.op}' expects ints, got {lt},{rt}", pos)
+            if expr.op in {"&&","||"}:
                 if lt == rt == "boolean":
                     return "boolean"
-                raise SemanticError(f"Logical '{op}' expects booleans, got {lt},{rt}", pos)
-            raise SemanticError(f"Unknown binary operator '{op}'", pos)
+                raise SemanticError(f"Logical '{expr.op}' expects booleans, got {lt},{rt}", pos)
+            raise SemanticError(f"Unknown binary operator '{expr.op}'", pos)
 
+        # --- method calls (static or instance) ---
         if isinstance(expr, MethodCall):
-            # two cases:  
-            # (A) static call: receiver is the struct name itself  
-            # (B) instance call: receiver is an expression of struct type
-
-            # try static first
+            # static: receiver is a struct name
             if isinstance(expr.receiver, Ident) and expr.receiver.name in structs:
-                struct_name = expr.receiver.name
-                sd = structs[struct_name]
-                # find the method
-                md = next((m for m in sd.methods if m.name == expr.method), None)
+                S = expr.receiver.name
+                sd = structs[S]
+                md = next((m for m in sd.methods if m.name==expr.method), None)
                 if md is None:
-                    raise SemanticError(
-                        f"Structure '{struct_name}' has no method '{expr.method}'",
-                        expr.pos
-                    )
+                    raise SemanticError(f"Structure '{S}' has no method '{expr.method}'", pos)
                 if not md.is_static:
-                    raise SemanticError(
-                        f"Cannot call instance method '{expr.method}' without an object",
-                        expr.pos
-                    )
-                # check args
+                    raise SemanticError(f"Cannot call instance method '{expr.method}' without an object", pos)
                 if len(expr.args) != len(md.params):
                     raise SemanticError(
-                        f"Static method '{struct_name}.{expr.method}' expects {len(md.params)} args, got {len(expr.args)}",
-                        expr.pos
+                        f"Static method '{S}.{expr.method}' expects {len(md.params)} args, got {len(expr.args)}",
+                        pos
                     )
-                for arg, (pname, pty) in zip(expr.args, md.params):
+                for arg, (pn,pty) in zip(expr.args, md.params):
                     at = infer(arg)
                     if at != pty:
                         raise SemanticError(
-                            f"In call to '{struct_name}.{expr.method}', expected {pty}, got {at}",
+                            f"In call to '{S}.{expr.method}', expected {pty}, got {at}",
                             arg.pos
                         )
-                expr.struct_name = struct_name
+                expr.struct_name = S
                 return md.return_type
 
-            # otherwise instance call
+            # instance: receiver has a struct type
             r_t = infer(expr.receiver)
             if r_t not in structs:
-                raise SemanticError(
-                    f"Cannot call method '{expr.method}' on non-struct '{r_t}'",
-                    expr.pos
-                )
+                raise SemanticError(f"Cannot call method '{expr.method}' on non-struct '{r_t}'", pos)
             sd = structs[r_t]
-            md = next((m for m in sd.methods if m.name == expr.method), None)
+            md = next((m for m in sd.methods if m.name==expr.method), None)
             if md is None:
-                raise SemanticError(
-                    f"Structure '{r_t}' has no method '{expr.method}'",
-                    expr.pos
-                )
+                raise SemanticError(f"Structure '{r_t}' has no method '{expr.method}'", pos)
             if md.is_static:
-                raise SemanticError(
-                    f"Cannot call static method '{expr.method}' on instance",
-                    expr.pos
-                )
-            # check args
+                raise SemanticError(f"Cannot call static method '{expr.method}' on instance", pos)
             if len(expr.args) != len(md.params):
                 raise SemanticError(
                     f"Method '{r_t}.{expr.method}' expects {len(md.params)} args, got {len(expr.args)}",
-                    expr.pos
+                    pos
                 )
-            for arg, (pname, pty) in zip(expr.args, md.params):
+            for arg, (pn,pty) in zip(expr.args, md.params):
                 at = infer(arg)
                 if at != pty:
                     raise SemanticError(
@@ -210,71 +221,78 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret, structs, struct_la
             expr.struct_name = r_t # type: ignore
             return md.return_type
 
+        # --- free function or constructor calls ---
         if isinstance(expr, FunctionCall):
-            # --- struct constructor? ---
-            if expr.name in struct_layouts:
-                layout = struct_layouts[expr.name]
-                fields = structs[expr.name].fields
-                # arity check
-                if len(expr.args) != len(fields):
+            # constructor?
+            if expr.name in structs:
+                sd   = structs[expr.name]
+                # look up the user‐declared constructor
+                ctor = next((m for m in sd.methods 
+                            if m.name == expr.name and m.is_static), None)
+                if ctor is None:
                     raise SemanticError(
-                      f"{expr.name}() expects {len(fields)} args, got {len(expr.args)}",
-                      expr.pos
+                        f"Structure '{expr.name}' has no constructor", expr.pos
                     )
-                # every arg must match the declared field type
-                for arg, fld in zip(expr.args, fields):
+                # arity check
+                if len(expr.args) != len(ctor.params):
+                    raise SemanticError(
+                        f"{expr.name}() expects {len(ctor.params)} args, got {len(expr.args)}",
+                        expr.pos
+                    )
+                # type‐check each parameter
+                for arg, (pname, pty) in zip(expr.args, ctor.params):
                     at = infer(arg)
-                    if at != fld.type:
+                    if at != pty:
                         raise SemanticError(
-                          f"In constructor {expr.name}(), field '{fld.name}' "
-                          f"expects {fld.type}, got {at}",
-                          arg.pos
+                        f"In constructor {expr.name}(), field '{pname}' expects {pty}, got {at}",
+                        arg.pos
                         )
-                # type of this expr is the struct‘s name
+                # OK—treat it as producing a value of type `expr.name`
                 return expr.name
 
-            # --- otherwise fall back to real function ---
+            # normal function
             if expr.name not in func_sigs:
                 raise SemanticError(f"Call to undefined function '{expr.name}'", pos)
-            param_types, ret_type = func_sigs[expr.name]
+            ptypes, rtype = func_sigs[expr.name]
             if expr.name == "print":
                 if len(expr.args) != 1:
-                    raise SemanticError(f"print() takes exactly one argument", pos)
-                arg_t = infer(expr.args[0])
-                if arg_t not in ("int","boolean"):
-                    raise SemanticError(f"print() only accepts int or boolean, got {arg_t}", expr.args[0].pos)
+                    raise SemanticError("print() takes exactly one argument", pos)
+                at = infer(expr.args[0])
+                if at not in ("int","boolean"):
+                    raise SemanticError(f"print() only accepts int or boolean, got {at}", expr.args[0].pos)
                 return "void"
-            if len(expr.args) != len(param_types):
+            if len(expr.args) != len(ptypes):
                 raise SemanticError(
-                    f"Function '{expr.name}' expects {len(param_types)} args, got {len(expr.args)}",
-                    pos
+                    f"Function '{expr.name}' expects {len(ptypes)} args, got {len(expr.args)}", pos
                 )
-            for arg, pty in zip(expr.args, param_types):
+            for arg,pty in zip(expr.args, ptypes):
                 at = infer(arg)
                 if at != pty:
-                    raise SemanticError(
-                        f"In call to '{expr.name}', expected {pty}, got {at}",
-                        getattr(arg, "pos", None)
-                    )
-            return ret_type
+                    raise SemanticError(f"In call to '{expr.name}', expected {pty}, got {at}", pos)
+            return rtype
+
+        # --- field access ---
         if isinstance(expr, MemberAccess):
-            # get object’s type
             obj_t = infer(expr.obj)
             if obj_t not in structs:
-                raise SemanticError(f"Cannot access field on non-structure '{obj_t}'", expr.pos)
-            struct_def = structs[obj_t]
-            # find the field; also remember the struct on the node
-            for f in struct_def.fields:
+                raise SemanticError(f"Cannot access field on non-structure '{obj_t}'", pos)
+            sd = structs[obj_t]
+            for f in sd.fields:
                 if f.name == expr.field:
-                    expr.struct_name = obj_t    # annotate for codegen # type: ignore
+                    expr.struct_name = obj_t # type: ignore
                     return f.type
-            raise SemanticError(f"Structure '{obj_t}' has no field '{expr.field}'", expr.pos)
+            raise SemanticError(f"Structure '{obj_t}' has no field '{expr.field}'", pos)
+
+
+
+    # --- now walk statements ---
     for stmt in stmts:
         pos = getattr(stmt, "pos", None)
 
         if isinstance(stmt, VariableDeclaration):
             if stmt.name in symbol_table:
                 raise SemanticError(f"Redeclaration of '{stmt.name}'", pos)
+            # void‐typed locals must have no initializer
             if stmt.type == "void":
                 if stmt.expr is not None:
                     raise SemanticError(f"Cannot initialize void variable '{stmt.name}'", pos)
@@ -283,40 +301,42 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret, structs, struct_la
                 if stmt.expr is None:
                     raise SemanticError(f"Missing initializer for '{stmt.name}'", pos)
                 rt = infer(stmt.expr)
-                if rt != stmt.type:
+                # allow null -> any struct
+                if not (rt == stmt.type or (rt == "*" and stmt.type in structs)):
                     raise SemanticError(f"Cannot assign {rt} to {stmt.type} '{stmt.name}'", pos)
                 symbol_table[stmt.name] = stmt.type
+            continue
 
         elif isinstance(stmt, VariableAssignment):
             if stmt.name not in symbol_table:
                 raise SemanticError(f"Assignment to undefined '{stmt.name}'", pos)
             lt = symbol_table[stmt.name]
-            if lt == "void":
-                raise SemanticError(f"Cannot assign to void variable '{stmt.name}'", pos)
             rt = infer(stmt.expr)
-            if rt != lt:
+            if not (rt == lt or (rt=="*" and lt in structs)):
                 raise SemanticError(f"Cannot assign {rt} to {lt} '{stmt.name}'", pos)
+            continue
 
         elif isinstance(stmt, MemberAssignment):
-             # LHS must be a MemberAccess whose type we already annotated
-             lhs_t = infer(stmt.obj)
-             # ensure field exists and record came from semantics
-             if not isinstance(stmt.obj, MemberAccess) or not hasattr(stmt.obj, "struct_name"):
-                 raise SemanticError(f"Invalid left‐hand side in member assignment", stmt.pos)
-             # now check RHS type matches
-             rt = infer(stmt.expr)
-             if rt != lhs_t:
-                 raise SemanticError(
-                     f"Cannot assign {rt} to field '{stmt.obj.field}' of type {lhs_t}",
-                     stmt.pos
-                 )
+            # LHS must be MemberAccess
+            lhs_t = infer(stmt.obj)
+            if not hasattr(stmt.obj, "struct_name"):
+                raise SemanticError("Invalid left-hand side in member assignment", pos)
+            rt = infer(stmt.expr)
+            if not (rt == lhs_t or (rt=="*" and lhs_t in structs)):
+                raise SemanticError(
+                    f"Cannot assign {rt} to field '{stmt.obj.field}' of type {lhs_t}", pos
+                )
+            continue
+
         elif isinstance(stmt, IfStmt):
             ct = infer(stmt.cond)
             if ct != "boolean":
                 raise SemanticError(f"Condition of if must be boolean, got {ct}", stmt.cond.pos)
-            # use a copy of symbol_table so inner blocks can't leak declarations
-            check_block(stmt.then_stmts, symbol_table.copy(), func_sigs, expected_ret, structs, struct_layouts, in_loop)
-            check_block(stmt.else_stmts, symbol_table.copy(), func_sigs, expected_ret, structs, struct_layouts, in_loop)
+            check_block(stmt.then_stmts, symbol_table.copy(),
+                        func_sigs, expected_ret, structs, struct_layouts, in_loop)
+            check_block(stmt.else_stmts, symbol_table.copy(),
+                        func_sigs, expected_ret, structs, struct_layouts, in_loop)
+            continue
 
         elif isinstance(stmt, ForStmt):
             table = symbol_table.copy()
@@ -384,34 +404,33 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret, structs, struct_la
                     raise SemanticError("Cannot return a value from void function", pos)
             else:
                 if stmt.expr is None:
-                    raise SemanticError(f"Missing return value in function returning '{expected_ret}'", pos)
+                    raise SemanticError(
+                        f"Missing return value in function returning '{expected_ret}'", pos
+                    )
                 rt = infer(stmt.expr)
-                if rt != expected_ret:
-                    raise SemanticError(f"Return type mismatch: expected {expected_ret}, got {rt}", pos)
-        elif isinstance(stmt, FunctionCall):
-            # bare call as statement
+                if not (rt == expected_ret or (rt=="*" and expected_ret in structs)):
+                    raise SemanticError(
+                        f"Return type mismatch: expected {expected_ret}, got {rt}", pos
+                    )
+            continue
+
+        elif isinstance(stmt, FunctionCall) or isinstance(stmt, MethodCall):
             infer(stmt)
-        elif isinstance(stmt, MethodCall):
-            # bare method‐call as statement
-            infer(stmt)
-        
+            continue
+
+
         else:
             infer(stmt)
 
 
 def block_returns(stmts) -> bool:
     """
-    Returns True if every control‐path in this list of stmts
-    is guaranteed to hit a ReturnStmt (no fall‐through).
+    True if every control path unconditionally hits a ReturnStmt.
     """
     for stmt in stmts:
         if isinstance(stmt, ReturnStmt):
             return True
         if isinstance(stmt, IfStmt):
-            # both branches must return
-            then_ret = block_returns(stmt.then_stmts)
-            else_ret = block_returns(stmt.else_stmts)
-            if then_ret and else_ret:
+            if block_returns(stmt.then_stmts) and block_returns(stmt.else_stmts):
                 return True
-        # other statements do not guarantee return, continue scanning
     return False

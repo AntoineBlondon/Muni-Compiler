@@ -3,7 +3,8 @@ from collections import namedtuple
 
 
 TOKEN_SPEC = [
-    (r"void\b",                  "VOID_KW"),
+    (r"null\b",                 "NULL_KW"),
+    (r"void\b",                 "VOID_KW"),
     (r"int\b",                  "INT_KW"),
     (r"boolean\b",              "BOOL_KW"),
     (r"structure\b",            "STRUCTURE_KW"),

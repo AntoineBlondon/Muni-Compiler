@@ -15,6 +15,28 @@ structure list<T>
     }
 }
 
+structure int_list
+{
+  int value;
+  int_list next; # actually a pointer to the next structure (because structures are pointers)
+  
+  int_list(int value)
+  {
+    this.value = value;
+    this.next = void; # or 0 (we will decide on a syntax for a null structure / null pointer)
+  }
+
+  int_list append(int_list other)
+  {
+    if (this.next == void) { # again, maybe void can represent a null structure
+        this.next = other;
+    } else {
+        next.append(other);
+    }
+  }
+
+}
+
 
 void main()
 {

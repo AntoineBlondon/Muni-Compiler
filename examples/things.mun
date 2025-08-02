@@ -1,0 +1,28 @@
+structure point
+{
+    int x;
+    int y;
+
+    point(int x, int y)
+    {
+        this.x = x;
+        this.y = y;
+    }
+    static point origin()
+    {
+        return point(0, 0);
+    }
+}
+
+void add_to_x(point p, int number)
+{
+    p.x = p.x + number;
+}
+
+void main()
+{
+    point p = point.origin();
+    add_to_x(p, 5);
+    print(p.x);
+    print(p.y);
+}

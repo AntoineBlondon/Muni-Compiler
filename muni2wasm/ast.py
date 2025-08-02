@@ -134,6 +134,7 @@ class MethodDeclaration:
         ps = ", ".join(f"{t} {n}" for n,t in self.params)
         return f"{static}{self.return_type} {self.name}({ps}) {{…}}"
 
+
 class StructureDeclaration:
     def __init__(self, name: str, fields: list[FieldDeclaration],
                  methods: list[MethodDeclaration], pos=None):
@@ -222,5 +223,10 @@ class DoStmt:
 
 
 class VoidStatement:
+    def __init__(self, pos=None):
+        self.pos = pos
+
+
+class NullLiteral:
     def __init__(self, pos=None):
         self.pos = pos

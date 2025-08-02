@@ -1,17 +1,33 @@
-structure math
+structure list
 {
-    static int fibonnacci(int number)
+    int value;
+    list next;
+
+    list(int value)
     {
-        if (number <= 2) {
-            return 1;
+        this.value = value;
+        this.next = null;
+    }
+
+    void append(list other)
+    {
+        if (this.next == null) {
+            this.next = other;
+        } else {
+            this.next.append(other);
         }
-        return math.fibonnacci(number - 1) + math.fibonnacci(number - 2);
     }
 }
 
 void main()
 {
-    for (int i = 1; i < 10; i = i + 1) {
-        print(math.fibonnacci(i));
+    list x = list(2);
+    list y = list(1);
+    x.append(y);
+    
+    list cur = x;
+    while (cur != null) {
+        print(cur.value);
+        cur = cur.next;
     }
 }
