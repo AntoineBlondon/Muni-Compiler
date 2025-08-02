@@ -1,37 +1,6 @@
-structure list
-{
-    static int MAX_LENGTH = 10;
-    int value;
-    list next;
-
-
-    list(int value)
-    {
-        this.value = value;
-        this.next = null;
-    }
-
-    
-
-    void append(list other)
-    {
-        if (this.next == null) {
-            this.next = other;
-        } else {
-            this.next.append(other);
-        }
-    }
-
-    void print()
-    {
-        list cur = this;
-        while (cur != null) {
-            print(cur.value);
-            cur = cur.next;
-        }
-    }
-}
-
+import <list.mun>;
+import <math.mun>;
+import env.print(int) -> void;
 
 
 
@@ -41,6 +10,8 @@ void main()
     x.append([5, 6, 7]);
 
     print(list.MAX_LENGTH);
+
+    print(math.pi);
 
     
 }

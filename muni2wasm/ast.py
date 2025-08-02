@@ -255,3 +255,24 @@ class ListLiteral:
         self.pos = pos
     def __str__(self):
         return "[" + ", ".join(str(e) for e in self.elements) + "]"
+
+
+class ImportDeclaration:
+  def __init__(self,
+               source: str | None = None,
+               module: str | None = None,
+               name:   str | None = None,
+               params: list[str] = None, # type: ignore
+               return_type: str | None = None,
+               pos=None):
+      self.source      = source       # e.g. "math.mun"
+      self.module      = module       # e.g. "env" or "random"
+      self.name        = name         # e.g. "print" or "randint"
+      self.params      = params or [] # ["int"], ["list"], …
+      self.return_type = return_type  # "void", "int", or struct name
+      self.pos         = pos
+  def __str__(self):
+      if self.source:
+          return f'import <{self.source}>;'
+      ps = ", ".join(self.params)
+      return f'import {self.module}.{self.name}({ps}) -> {self.return_type};'

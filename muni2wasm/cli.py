@@ -5,6 +5,7 @@ import tempfile
 import argparse
 
 from .lexer import tokenize
+from .ast import Program, ImportDeclaration
 from .parser import Parser
 from .codegen_wat import CodeGen
 from .semantics import check, SemanticError
@@ -16,16 +17,20 @@ try:
 except ImportError:
     _HAS_WASMTIME = False
 
-def compile_to_wat(source: str) -> str:
+def compile_to_wat(source: str, base_dir: str | None = None) -> str:
     tokens = tokenize(source)
     ast = Parser(tokens).parse()
+    if base_dir is None:
+        base_dir = os.getcwd()
+    ast = _inline_file_imports(ast, base_dir)
     check(ast)
     return CodeGen(ast).gen()
 
 def compile_file(input_file: str, output_file: str):
     # Read source
     source = open(input_file).read()
-    wat = compile_to_wat(source)
+    base_dir = os.path.dirname(os.path.abspath(input_file))
+    wat      = compile_to_wat(source, base_dir)
 
     # Make sure output directory exists
     out_dir = os.path.dirname(os.path.abspath(output_file))
@@ -67,6 +72,37 @@ def compile_file(input_file: str, output_file: str):
     # Unknown extension
     print("Error: output file must end with .wat or .wasm", file=sys.stderr)
     sys.exit(1)
+
+def _inline_file_imports(ast: Program, base_dir: str, seen: set[str]=None) -> Program: # type: ignore
+    """
+    Walk the top‐level ImportDeclarations that have .source set,
+    load each file, parse it, recursively inline *its* file‐imports,
+    and splice all of those decls in place of the import.
+    """
+    if seen is None:
+        seen = set()
+    new_decls = []
+    for decl in ast.decls:
+        # only care about file imports:
+        if isinstance(decl, ImportDeclaration) and decl.source:
+            # resolve relative to the importing file's directory
+            path = os.path.normpath(os.path.join(base_dir, decl.source))
+            if path in seen:
+                # already inlined, skip in order to avoid cycles
+                continue
+            seen.add(path)
+            src = open(path, "r").read()
+            toks = tokenize(src)
+            child = Parser(toks).parse()
+            # recurse, using the imported file's dir as new base
+            child = _inline_file_imports(child, os.path.dirname(path), seen)
+            # splice in everything except nested file‐imports got handled above
+            new_decls.extend(child.decls)
+        else:
+            new_decls.append(decl)
+    ast.decls = new_decls
+    return ast
+
 
 def run_wasm(wasm_file: str):
     if not _HAS_WASMTIME:

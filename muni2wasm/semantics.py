@@ -23,6 +23,7 @@ from .ast import (
     MethodCall,
     NullLiteral,
     ListLiteral,    
+    ImportDeclaration,
 )
 
 class SemanticError(Exception):
@@ -37,8 +38,12 @@ class SemanticError(Exception):
 
 def check(program: Program):
     # --- collect top-level ---
+    imports    = [d for d in program.decls if isinstance(d, ImportDeclaration)]
     func_decls = [d for d in program.decls if isinstance(d, FunctionDeclaration)]
-    stmts      = [d for d in program.decls if not isinstance(d, (FunctionDeclaration, StructureDeclaration))]
+    stmts      = [d for d in program.decls if not isinstance(d, (FunctionDeclaration, StructureDeclaration, ImportDeclaration))]
+
+    
+
 
     # --- collect struct defs ---
     structs: dict[str, StructureDeclaration] = {}
@@ -75,10 +80,16 @@ def check(program: Program):
         for name,d in structs.items()
     }
 
-    # --- build global function signatures (including print) ---
+    # --- build global function signatures ---
+    # start with any host‐imported functions
     func_sigs: dict[str, tuple[list[str], str]] = {}
-    func_sigs["print"] = ( ["*"], "void" )   # print(*) → void
+    for imp in imports:
+        if imp.module:
+            if imp.name in func_sigs:
+                raise SemanticError(f"Function '{imp.name}' redefined", imp.pos)
+            func_sigs[imp.name] = (imp.params, imp.return_type)  # type: ignore
 
+    # then add all user-defined (free) functions
     for fd in func_decls:
         if fd.name in func_sigs:
             raise SemanticError(f"Function '{fd.name}' redefined", fd.pos)
@@ -299,13 +310,6 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret,
             if expr.name not in func_sigs:
                 raise SemanticError(f"Call to undefined function '{expr.name}'", pos)
             ptypes, rtype = func_sigs[expr.name]
-            if expr.name == "print":
-                if len(expr.args) != 1:
-                    raise SemanticError("print() takes exactly one argument", pos)
-                at = infer(expr.args[0])
-                if at not in ("int","boolean"):
-                    raise SemanticError(f"print() only accepts int or boolean, got {at}", expr.args[0].pos)
-                return "void"
             if len(expr.args) != len(ptypes):
                 raise SemanticError(
                     f"Function '{expr.name}' expects {len(ptypes)} args, got {len(expr.args)}", pos

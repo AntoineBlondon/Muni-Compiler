@@ -24,6 +24,7 @@ from .ast import (
     MethodCall,
     NullLiteral,
     ListLiteral,
+    ImportDeclaration
 )
 
 class CodeGen:
@@ -41,9 +42,20 @@ class CodeGen:
         return lbl
 
     def gen(self) -> str:
-        self.out = [
-            "(module",
-            '  (import "env" "print" (func $print (param i32)))',
+        self.out = ["(module"]
+            
+
+        for imp in self.program.decls:
+            if isinstance(imp, ImportDeclaration) and imp.source is None:
+                # host import
+                param_decl  = " ".join("i32" for _ in imp.params)
+                result_decl = "" if imp.return_type=="void" else "(result i32)"
+                self.out.append(
+                    f'  (import "{imp.module}" "{imp.name}" '
+                    f'(func ${imp.name} (param {param_decl}) {result_decl}))'
+                )
+        
+        self.out.extend([
             "  (memory $mem 1)",
             "  (global $heap (mut i32) (i32.const 4))",
             "  (func $malloc (param $n i32) (result i32)",
@@ -55,7 +67,7 @@ class CodeGen:
             "  )",
             '  (export "memory" (memory $mem))',
             '  (export "malloc" (func $malloc))',
-        ]
+        ])
 
         # collect struct layouts
         for d in self.program.decls:

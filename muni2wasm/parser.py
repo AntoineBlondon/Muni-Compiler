@@ -48,7 +48,10 @@ class Parser:
         decls = []
         while self.peek() != "EOF":
             # function or constructor: return‐type could be VOID_KW|INT_KW|BOOL_KW|IDENT
-            if (
+            if self.peek() == "IMPORT_KW":
+                decls.append(self.parse_import_declaration())
+                continue
+            elif (
                 (self.peek() in ("VOID_KW","INT_KW","BOOL_KW") or self.peek()=="IDENT")
                 and self.tokens[self.pos+1].kind=="IDENT"
                 and self.tokens[self.pos+2].kind=="LPAREN"
@@ -143,6 +146,54 @@ class Parser:
         expr = self.parse_expr()
         if semi: self.expect("SEMI")
         return expr
+    
+    def parse_import_declaration(self):
+        tok = self.expect("IMPORT_KW")
+        # --- source-file import ---
+        if self.peek() == "PATH":
+            path = self.next().text[1:-1]      # strip <…>
+            self.expect("SEMI")
+            return self.ast.ImportDeclaration(source=path, pos=(tok.line,tok.col))
+
+        # --- host import:  module.name(params…) -> retType; ---
+        mod = self.expect("IDENT").text
+        self.expect("DOT")
+        nm  = self.expect("IDENT").text
+        self.expect("LPAREN")
+        params = []
+        if self.peek() != "RPAREN":
+            while True:
+                # allow INT_KW|BOOL_KW|VOID_KW or IDENT (for structs)
+                pk = self.peek()
+                if pk in ("INT_KW","BOOL_KW","VOID_KW"):
+                    t = self.next().kind
+                    params.append({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[t])
+                elif pk == "IDENT":
+                    params.append(self.next().text)
+                else:
+                    p = self.peek_token()
+                    raise SyntaxError(f"{p.line}:{p.col}: Unexpected type {pk}")
+                if self.peek()=="COMMA":
+                    self.next(); continue
+                break
+        self.expect("RPAREN")
+        self.expect("RARROW")
+        # return‐type
+        rt_kind = self.peek()
+        if rt_kind in ("INT_KW","BOOL_KW","VOID_KW"):
+            rt = {"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[self.next().kind]
+        elif rt_kind == "IDENT":
+            rt = self.next().text
+        else:
+            p = self.peek_token()
+            raise SyntaxError(f"{p.line}:{p.col}: Unexpected return type {rt_kind}")
+        self.expect("SEMI")
+        return self.ast.ImportDeclaration(
+            module=mod, name=nm,
+            params=params,
+            return_type=rt,
+            pos=(tok.line, tok.col)
+        )
 
     def parse_structure_declaration(self):
         kw       = self.expect("STRUCTURE_KW")
