@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Muni in the Browser</title>
+</head>
+<body>
+  <pre id="output"></pre>
+  <script>
+    (async () => {
+      // 1) Fetch your compiled Wasm module
+      const response = await fetch("o.wasm");
+      const bytes    = await response.arrayBuffer();
+      // 2) Instantiate it, giving it a JS implementation of print()
+      const { instance } = await WebAssembly.instantiate(bytes, {
+        env: {
+          print: (x) => {
+            document.getElementById("output").textContent += x + "\n";
+          }
+        }
+      });
+      // 3) Call the exported `main` (if your program has one)
+      instance.exports.main();
+    })();
+  </script>
+</body>
+</html>

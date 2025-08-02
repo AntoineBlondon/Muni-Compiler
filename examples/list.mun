@@ -1,0 +1,22 @@
+
+structure list<T>
+{
+    T value;
+    list<T> *next;
+    
+    list<T> append(list<T> other)
+    {
+        if (this.next == void) {
+            this.next = &other.value;
+        } else {
+            *(this.next).append(other);
+        }
+
+    }
+}
+
+
+void main()
+{
+    list<int> a = list<int>(1, void);
+}
