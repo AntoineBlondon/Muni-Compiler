@@ -110,6 +110,7 @@ class CodeGen:
                 self.locals.append(s.name)
         # a scratch local for things like `do { … }`
         self.locals.append("__struct_ptr")
+        self.locals.append("__lit") 
 
         locals_decl = " ".join(f"(local ${n} i32)" for n in self.locals)
 
@@ -138,7 +139,7 @@ class CodeGen:
 
 
     def gen_func(self, func: FunctionDeclaration):
-        self.locals = ["__struct_ptr"]
+        self.locals = ["__struct_ptr", "__lit"]
         self.code = []
 
         # recursively collect locals
@@ -182,29 +183,7 @@ class CodeGen:
     def gen_stmt(self, stmt):
         # VariableDeclaration
 
-        if isinstance(stmt, VariableDeclaration) \
-           and isinstance(stmt.expr, ListLiteral) \
-           and stmt.type == "list":
 
-            # 1) head = list(e1)
-            first = stmt.expr.elements[0]
-            # generate a call to the list‐constructor
-            self.gen_expr(FunctionCall("list", [first], pos=stmt.pos))
-            self.emit(f"local.set ${stmt.name}")
-
-            # 2) for each remaining element: x.append(list(e))
-            for elt in stmt.expr.elements[1:]:
-                # make the new node
-                self.gen_expr(FunctionCall("list", [elt], pos=stmt.pos))
-                # call x.append(newNode)
-                self.emit(f"local.get ${stmt.name}")    # push x (the head)
-                self.emit("local.get $__struct_ptr")    # push the newly‐made node
-                # instance‐method append compiled to (func $list_append (param $this i32) (param $other i32))
-                self.emit(f"call $list_append")
-
-            # 3) leave head on stack so that the surrounding `local.set $x` in the caller doesn’t lose it
-            self.emit(f"local.get ${stmt.name}")
-            return
         if isinstance(stmt, VariableDeclaration):
             if stmt.expr is not None:
                 self.gen_expr(stmt.expr)
@@ -443,6 +422,26 @@ class CodeGen:
             self.emit(f"i32.const {expr.value}")
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
+        elif isinstance(expr, ListLiteral):
+            # --- head node ---
+            head_call = FunctionCall("list", [expr.elements[0]], pos=expr.pos)
+            self.gen_expr(head_call)         # alloc + constructor
+            self.emit("local.set $__lit")    # store head in $__lit
+
+            # --- link remaining elements ---
+            for elt in expr.elements[1:]:
+                node_call = FunctionCall("list", [elt], pos=expr.pos)
+                self.gen_expr(node_call)     # alloc + constructor
+                self.emit("local.set $__struct_ptr")
+
+                # __lit.append(__struct_ptr)
+                self.emit("local.get $__lit")
+                self.emit("local.get $__struct_ptr")
+                self.emit("call $list_append")
+
+            # --- result of the literal is the head ptr ---
+            self.emit("local.get $__lit")
+            return
         elif isinstance(expr, NullLiteral):
             self.emit("i32.const 0")
         elif isinstance(expr, Ident):
@@ -484,15 +483,17 @@ class CodeGen:
                 self.emit(f"call ${fn}")
         elif isinstance(expr, FunctionCall) and expr.name in self.struct_layouts:
             layout = self.struct_layouts[expr.name]
-            fields = list(layout["offsets"].items())
+            # 1) allocate
             self.emit(f"i32.const {layout['size']}")
             self.emit("call $malloc")
             self.emit("local.set $__struct_ptr")
-            for (_, off), arg in zip(fields, expr.args):
-                self.emit("local.get $__struct_ptr")
-                self.gen_expr(arg)
-                self.emit(f"i32.store offset={off}")
+
+            # 3) now push (thisPtr, ...ctorArgs) and call $Type_Type
             self.emit("local.get $__struct_ptr")
+            for arg in expr.args:
+                self.gen_expr(arg)
+            self.emit(f"call ${expr.name}_{expr.name}")
+            return
         elif isinstance(expr, FunctionCall):
             for a in expr.args:
                 self.gen_expr(a)

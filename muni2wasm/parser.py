@@ -39,7 +39,7 @@ class Parser:
             raise SyntaxError(f"{tok.line}:{tok.col}: Expected {kind}, got {tok.kind}")
         return tok
 
-    @property
+    @property   
     def ast(self):
         import muni2wasm.ast as _ast
         return _ast
