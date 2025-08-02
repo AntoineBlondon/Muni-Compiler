@@ -24,7 +24,8 @@ from .ast import (
     MethodCall,
     NullLiteral,
     ListLiteral,
-    ImportDeclaration
+    ImportDeclaration,
+    TypeExpr
 )
 
 class CodeGen:
@@ -47,9 +48,11 @@ class CodeGen:
 
         for imp in self.program.decls:
             if isinstance(imp, ImportDeclaration) and imp.source is None:
-                # host import
-                param_decl  = " ".join("i32" for _ in imp.params)
-                result_decl = "" if imp.return_type=="void" else "(result i32)"
+                # host import (ignore any type-parameters)
+                param_decl = " ".join("i32" for _ in imp.params)
+                # imp.return_type might be a string or a TypeExpr
+                rt = imp.return_type.name if hasattr(imp.return_type, "name") else imp.return_type # type: ignore
+                result_decl = "" if rt == "void" else "(result i32)"
                 self.out.append(
                     f'  (import "{imp.module}" "{imp.name}" '
                     f'(func ${imp.name} (param {param_decl}) {result_decl}))'
@@ -128,11 +131,11 @@ class CodeGen:
             params.append(f"(param ${pname} i32)")
 
         # 3) return signature
-        result_decl = "" if m.return_type == "void" else "(result i32)"
+        result_decl = "" if m.return_type == TypeExpr("void") else "(result i32)"
 
         # 4) gather locals (excluding parameters)
         for s in m.body:
-            if isinstance(s, VariableDeclaration) and s.type != "void":
+            if isinstance(s, VariableDeclaration) and s.type != TypeExpr("void"):
                 self.locals.append(s.name)
         # a scratch local for things like `do { … }`
         self.locals.append("__struct_ptr")
@@ -153,7 +156,7 @@ class CodeGen:
             # constructors implicitly return `this`
             self.emit("local.get $this")
             self.emit("return")
-        elif m.return_type == "void":
+        elif m.return_type == TypeExpr("void"):
             self.emit("return")
         else:
             # non-void methods must return explicitly on every path, unreachable otherwise
@@ -165,13 +168,14 @@ class CodeGen:
 
 
     def gen_func(self, func: FunctionDeclaration):
+        
         self.locals = ["__struct_ptr", "__lit"]
         self.code = []
 
         # recursively collect locals
         def scan(s):
             from .ast import VariableDeclaration, IfStmt, ForStmt, WhileStmt, DoStmt, UntilStmt
-            if isinstance(s, VariableDeclaration) and s.type != "void":
+            if isinstance(s, VariableDeclaration) and s.type != TypeExpr("void"):
                 if s.name not in self.locals:
                     self.locals.append(s.name)
             elif isinstance(s, IfStmt):
@@ -193,7 +197,7 @@ class CodeGen:
             scan(st)
 
         params_decl = " ".join(f"(param ${n} i32)" for n, _ in func.params)
-        result_decl = "" if func.return_type == "void" else "(result i32)"
+        result_decl = "" if func.return_type == TypeExpr("void") else "(result i32)"
         locals_decl = " ".join(f"(local ${n} i32)" for n in self.locals)
 
         hdr = f"  (func ${func.name} {params_decl} {result_decl} {locals_decl}"
@@ -202,7 +206,7 @@ class CodeGen:
         for st in func.body:
             self.gen_stmt(st)
 
-        self.emit("return" if func.return_type == "void" else "unreachable")
+        self.emit("return" if func.return_type == TypeExpr("void") else "unreachable")
         self.out.extend(self.code)
         self.out.append("  )")
 
@@ -450,13 +454,13 @@ class CodeGen:
             self.emit(f"i32.const {1 if expr.value else 0}")
         elif isinstance(expr, ListLiteral):
             # --- head node ---
-            head_call = FunctionCall("list", [expr.elements[0]], pos=expr.pos)
+            head_call = FunctionCall("list", [], [expr.elements[0]], pos=expr.pos)
             self.gen_expr(head_call)         # alloc + constructor
             self.emit("local.set $__lit")    # store head in $__lit
 
             # --- link remaining elements ---
             for elt in expr.elements[1:]:
-                node_call = FunctionCall("list", [elt], pos=expr.pos)
+                node_call = FunctionCall("list", [], [elt], pos=expr.pos)
                 self.gen_expr(node_call)     # alloc + constructor
                 self.emit("local.set $__struct_ptr")
 

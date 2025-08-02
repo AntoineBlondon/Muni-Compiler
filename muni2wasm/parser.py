@@ -51,11 +51,9 @@ class Parser:
             if self.peek() == "IMPORT_KW":
                 decls.append(self.parse_import_declaration())
                 continue
-            elif (
-                (self.peek() in ("VOID_KW","INT_KW","BOOL_KW") or self.peek()=="IDENT")
-                and self.tokens[self.pos+1].kind=="IDENT"
-                and self.tokens[self.pos+2].kind=="LPAREN"
-            ):
+            elif ((self.peek() in ("VOID_KW","INT_KW","BOOL_KW") or self.peek()=="IDENT")
+                    and self.tokens[self.pos+1].kind=="IDENT"
+                    and self.tokens[self.pos+2].kind in ("LT","LPAREN")):
                 decls.append(self.parse_function_declaration())
             elif self.peek() == "STRUCTURE_KW":
                 decls.append(self.parse_structure_declaration())
@@ -94,34 +92,7 @@ class Parser:
             return self.parse_do()
         if self.peek() == "UNTIL_KW":
             return self.parse_until()
-
-        # local declaration: int|boolean|void
-        if kind in ["INT_KW", "BOOL_KW", "VOID_KW"]:
-            type_tok = self.next()
-            name_tok = self.expect("IDENT")
-            self.expect("ASSIGN")
-            expr = self.parse_expr()
-            if semi: self.expect("SEMI")
-            return self.ast.VariableDeclaration(
-                type_tok.text, name_tok.text, expr,
-                pos=(type_tok.line, type_tok.col)
-            )
-
-        # struct‐typed declaration: e.g. Point p = Point(...);
-        if (kind == "IDENT"
-            and self.tokens[self.pos+1].kind == "IDENT"
-            and self.tokens[self.pos+2].kind == "ASSIGN"):
-            type_tok = self.next()
-            struct_type = type_tok.text
-            name_tok = self.expect("IDENT")
-            self.expect("ASSIGN")
-            expr = self.parse_expr()
-            if semi: self.expect("SEMI")
-            return self.ast.VariableDeclaration(
-                struct_type, name_tok.text, expr,
-                pos=(type_tok.line, type_tok.col)
-            )
-
+        
         # member‐assignment: p.x = expr;
         if kind == "IDENT" and self.tokens[self.pos+1].kind == "DOT":
             # look ahead for ASSIGN
@@ -141,6 +112,24 @@ class Parser:
         # plain assignment: x = expr;
         if kind == "IDENT" and self.tokens[self.pos+1].kind == "ASSIGN":
             return self.parse_assignment(tok, semi)
+
+        # local declaration: int|boolean|void
+        if kind in ["INT_KW", "BOOL_KW", "VOID_KW"] or (kind == "IDENT"
+            and self.tokens[self.pos+1].kind == "IDENT"
+            and self.tokens[self.pos+2].kind == "ASSIGN"):
+            first_tok = self.peek_token()
+            declaration_type = self.parse_type_expr()
+            name_tok = self.expect("IDENT")
+            self.expect("ASSIGN")
+            expr = self.parse_expr()
+            if semi: self.expect("SEMI")
+            return self.ast.VariableDeclaration(
+                declaration_type, name_tok.text, expr,
+                pos=(first_tok.line, first_tok.col)
+            )
+
+
+        
 
         # fallback: any other expression as statement
         expr = self.parse_expr()
@@ -162,7 +151,7 @@ class Parser:
         # --- host import:  module.name(params…) -> retType; ---
         mod = self.expect("IDENT").text
         self.expect("DOT")
-        nm  = self.expect("IDENT").text
+        function_name  = self.expect("IDENT").text
         self.expect("LPAREN")
         params = []
         if self.peek() != "RPAREN":
@@ -171,9 +160,9 @@ class Parser:
                 pk = self.peek()
                 if pk in ("INT_KW","BOOL_KW","VOID_KW"):
                     t = self.next().kind
-                    params.append({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[t])
+                    params.append(self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[t]))
                 elif pk == "IDENT":
-                    params.append(self.next().text)
+                    params.append(self.ast.TypeExpr(self.next().text))
                 else:
                     p = self.peek_token()
                     raise SyntaxError(f"{p.line}:{p.col}: Unexpected type {pk}")
@@ -185,15 +174,15 @@ class Parser:
         # return‐type
         rt_kind = self.peek()
         if rt_kind in ("INT_KW","BOOL_KW","VOID_KW"):
-            rt = {"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[self.next().kind]
+            rt = self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[self.next().kind])
         elif rt_kind == "IDENT":
-            rt = self.next().text
+            rt = self.ast.TypeExpr(self.next().text)
         else:
             p = self.peek_token()
             raise SyntaxError(f"{p.line}:{p.col}: Unexpected return type {rt_kind}")
         self.expect("SEMI")
         return self.ast.ImportDeclaration(
-            module=mod, name=nm,
+            module=mod, name=function_name,
             params=params,
             return_type=rt,
             pos=(tok.line, tok.col)
@@ -214,10 +203,10 @@ class Parser:
                 # parse type (INT_KW|BOOL_KW|IDENT)
                 if self.peek() in ("INT_KW","BOOL_KW"):
                     ty_tok = self.next()
-                    ty = "int" if ty_tok.kind=="INT_KW" else "boolean"
+                    ty = self.ast.TypeExpr("int") if ty_tok.kind=="INT_KW" else self.ast.TypeExpr("boolean")
                 elif self.peek()=="IDENT":
                     ty_tok = self.next()
-                    ty = ty_tok.text
+                    ty = self.ast.TypeExpr(ty_tok.text)
                 else:
                     t = self.peek_token()
                     raise SyntaxError(f"{t.line}:{t.col}: Unexpected static‐field type {self.peek()}")
@@ -226,7 +215,7 @@ class Parser:
                 init = self.parse_expr()
                 self.expect("SEMI")
                 static_fields.append(
-                    self.ast.StaticFieldDeclaration(name_tok.text, ty, init,
+                    self.ast.StaticFieldDeclaration(name_tok.text, ty, init, # type: ignore
                                                     pos=(ty_tok.line,ty_tok.col))
                 )
                 continue
@@ -242,11 +231,11 @@ class Parser:
                     while True:
                         pk = self.peek()
                         if pk == "INT_KW":
-                            self.next(); p_ty="int"
+                            self.next(); p_ty=self.ast.TypeExpr("int")
                         elif pk == "BOOL_KW":
-                            self.next(); p_ty="boolean"
+                            self.next(); p_ty=self.ast.TypeExpr("boolean")
                         elif pk == "IDENT":
-                            p_tok = self.next(); p_ty = p_tok.text
+                            p_tok = self.next(); p_ty = self.ast.TypeExpr(p_tok.text)
                         else:
                             t = self.peek_token()
                             raise SyntaxError(f"{t.line}:{t.col}: Unexpected parameter type {pk}")
@@ -280,16 +269,16 @@ class Parser:
                 and self.tokens[self.pos+2].kind == "SEMI"):
                 tok_type = self.next()
                 if tok_type.kind == "INT_KW":
-                    type_name = "int"
+                    field_type = self.ast.TypeExpr("int")
                 elif tok_type.kind == "BOOL_KW":
-                    type_name = "boolean"
+                    field_type = self.ast.TypeExpr("boolean")
                 else:
                     # user‐defined struct
-                    type_name = tok_type.text
+                    field_type = self.ast.TypeExpr(tok_type.text)
                 idt = self.expect("IDENT")
                 self.expect("SEMI")
                 fields.append(self.ast.FieldDeclaration(
-                    idt.text, type_name,
+                    idt.text, field_type,
                     pos=(tok_type.line, tok_type.col)
                 ))
                 continue
@@ -305,10 +294,10 @@ class Parser:
             tok = self.peek()
             if tok in ("VOID_KW","INT_KW","BOOL_KW"):
                 rt_tok = self.next()
-                rt = {"VOID_KW":"void","INT_KW":"int","BOOL_KW":"boolean"}[rt_tok.kind]
+                rt = self.ast.TypeExpr({"VOID_KW":"void","INT_KW":"int","BOOL_KW":"boolean"}[rt_tok.kind])
             elif tok == "IDENT":
                 rt_tok = self.next()
-                rt = rt_tok.text
+                rt = self.ast.TypeExpr(rt_tok.text)
             else:
                 t = self.peek_token()
                 raise SyntaxError(f"{t.line}:{t.col}: Expected return type, got {tok}")
@@ -325,11 +314,11 @@ class Parser:
                     # built-in types
                     if kind in ("INT_KW","BOOL_KW","VOID_KW"):
                         p_tok = self.next()
-                        ptype = {"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[p_tok.kind]
+                        ptype = self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[p_tok.kind])
                     # struct type
                     elif kind == "IDENT":
                         p_tok = self.next()
-                        ptype = p_tok.text
+                        ptype = self.ast.TypeExpr(p_tok.text)
                     else:
                         t = self.peek_token()
                         raise SyntaxError(f"{t.line}:{t.col}: Unexpected parameter type {kind}")
@@ -351,7 +340,7 @@ class Parser:
             self.expect("RBRACE")
 
             methods.append(self.ast.MethodDeclaration(
-                idt.text, params, rt, body, is_static,
+                idt.text, params, rt, body, is_static, # type: ignore
                 pos=(rt_tok.line, rt_tok.col)
             ))
 
@@ -364,34 +353,32 @@ class Parser:
 
     def parse_function_declaration(self):
         # return type: VOID_KW|INT_KW|BOOL_KW|IDENT
-        tok = self.peek()
-        if tok in ("INT_KW","BOOL_KW","VOID_KW"):
-            tok_ret = self.next()
-            rt = {"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[tok_ret.kind]
-        else:
-            tok_ret = self.next()
-            rt = tok_ret.text
+        first_tok = self.peek_token()
+        return_type = self.parse_type_expr()
 
         name_tok = self.expect("IDENT")
-        name = name_tok.text
+        function_name = name_tok.text
+
+        type_params = []
+        if self.peek() == "LT":
+            self.next()  # consume '<'
+            while True:
+                tok = self.expect("IDENT")
+                type_params.append(tok.text)
+                if self.peek()=="COMMA":
+                    self.next()
+                    continue
+                break
+            self.expect("GT")
 
         # params
         self.expect("LPAREN")
         params = []
         if self.peek() != "RPAREN":
             while True:
-                kind = self.peek()
-                if kind in ("INT_KW","BOOL_KW","VOID_KW"):
-                    p_tok = self.next()
-                    p_ty = {"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[p_tok.kind]
-                elif kind == "IDENT":
-                    p_tok = self.next()
-                    p_ty = p_tok.text
-                else:
-                    t = self.peek_token()
-                    raise SyntaxError(f"{t.line}:{t.col}: Unexpected parameter type {kind}")
-                id_tok = self.expect("IDENT")
-                params.append((id_tok.text, p_ty))
+                parameter_type = self.parse_type_expr()
+                parameter_name = self.expect("IDENT").text
+                params.append((parameter_name, parameter_type))
                 if self.peek()=="COMMA":
                     self.next(); continue
                 break
@@ -405,14 +392,9 @@ class Parser:
         self.expect("RBRACE")
 
         return self.ast.FunctionDeclaration(
-            name, params, rt, body, pos=(tok_ret.line, tok_ret.col)
+            function_name, type_params, params, return_type, body, pos=(first_tok.line, first_tok.col)
         )
 
-    # (rest of your parse_if, parse_while, parse_for, etc. unchanged)
-    # …
-    # make sure your parse_if, parse_while, parse_until, parse_for, parse_do,
-    # parse_assignment, parse_expr, parse_unary, parse_primary all remain exactly
-    # as they were.
 
 
     def parse_if(self, tok_kw):
@@ -554,6 +536,15 @@ class Parser:
     
     def parse_call(self):
         name_tok = self.expect("IDENT")
+        type_args = []
+        if self.peek() == "LT":
+            self.next()
+            while True:
+                type_args.append(self.parse_type_expr())
+                if self.peek()=="COMMA":
+                    self.next(); continue
+                break
+            self.expect("GT")
         self.expect("LPAREN")
         args=[]
         if self.peek()!="RPAREN":
@@ -563,7 +554,7 @@ class Parser:
                     self.expect("COMMA"); continue
                 break
         self.expect("RPAREN")
-        return self.ast.FunctionCall(name_tok.text, args, pos=(name_tok.line,name_tok.col))
+        return self.ast.FunctionCall(name_tok.text, type_args, args, pos=(name_tok.line,name_tok.col))
 
 
     def parse_assignment(self, tok_ident, semi=True):
@@ -653,6 +644,15 @@ class Parser:
             name = text
             self.next()
             # call‐lookahead
+            type_args = []
+            if self.peek() == "LT":
+                self.next()
+                while True:
+                    type_args.append(self.parse_type_expr())
+                    if self.peek()=="COMMA":
+                        self.next(); continue
+                    break
+                self.expect("GT")
             if self.peek() == "LPAREN":
                 # it's a FuncCall expression
                 self.next()  # consume "("
@@ -664,7 +664,7 @@ class Parser:
                             self.next(); continue
                         break
                 self.expect("RPAREN")
-                node = self.ast.FunctionCall(name, args, pos=(line,col))
+                node = self.ast.FunctionCall(name, type_args, args, pos=(line,col))
             else:
                 node = self.ast.Ident(name, pos=(line,col))
             # 1) any number of “.field” or “.method(...)”
@@ -699,3 +699,21 @@ class Parser:
 
         raise SyntaxError(f"{line}:{col}: Unexpected token in primary: {kind}")
 
+    def parse_type_expr(self):
+        # caller must have peek()=="IDENT"
+        if self.peek() in ["INT_KW", "VOID_KW", "BOOL_KW"]:
+            name = {"INT_KW": "int", "VOID_KW": "void", "BOOL_KW": "boolean"}[self.next().kind]
+            return self.ast.TypeExpr(name)
+        else:
+            tok = self.expect("IDENT")
+            name = tok.text
+            params = []
+            if self.peek() == "LT":           # '<'
+                self.next()
+                while True:
+                    params.append(self.parse_type_expr())
+                    if self.peek()=="COMMA":
+                        self.next(); continue
+                    break
+                self.expect("GT")            # '>'
+            return self.ast.TypeExpr(name, params, pos=(tok.line,tok.col))

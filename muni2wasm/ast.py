@@ -15,7 +15,7 @@ class VariableDeclaration:
         self.pos = pos
 
     def __str__(self):
-        return f"(new {self.type}) {self.name} <- {self.expr}"
+        return f"new {self.type} {self.name} <- {self.expr}"
 
 class VariableAssignment:
     def __init__(self, name, expr, pos=None):
@@ -93,26 +93,32 @@ class ReturnStmt:
         return "return" + (f" {self.expr}" if self.expr else "")
 
 class FunctionDeclaration:
-    def __init__(self, name, params, return_type, body, pos=None):
+    def __init__(self, name, type_params, params, return_type, body, pos=None):
         self.name = name                   # "factorial"
+        self.type_params = type_params
         self.params = params               # [("number","int"),…]
         self.return_type = return_type     # "int", "boolean", or "void"
         self.body = body                   # list of statements
         self.pos = pos
     def __str__(self):
         ps = ", ".join(f"{t} {n}" for n,t in self.params)
+        if self.type_params: 
+            return f"function {self.return_type} {self.name}<{', '.join(self.type_params)}>({ps}) {{…}}"
         return f"function {self.return_type} {self.name}({ps}) {{…}}"
 
 class FunctionCall:
-    def __init__(self, name, args, pos=None):
-        self.name = name; self.args = args; self.pos = pos
+    def __init__(self, name, type_args, args, pos=None):
+        self.name = name 
+        self.type_args = type_args
+        self.args = args
+        self.pos = pos
     def __str__(self):
         a = ", ".join(str(x) for x in self.args)
         return f"{self.name}({a})"
 
 
 class FieldDeclaration:
-    def __init__(self, name: str, type: str, pos=None):
+    def __init__(self, name: str, type, pos=None):
         self.name = name
         self.type = type
         self.pos = pos
@@ -120,7 +126,7 @@ class FieldDeclaration:
         return f"field({self.type} {self.name})"
     
 class MethodDeclaration:
-    def __init__(self, name: str, params: list[tuple[str,str]], return_type: str,
+    def __init__(self, name: str, params, return_type,
                  body: list, is_static: bool, pos=None):
         self.name = name
         self.params = params          # [(name, type), …]
@@ -135,7 +141,7 @@ class MethodDeclaration:
         return f"{static}{self.return_type} {self.name}({ps}) {{…}}"
 
 class StaticFieldDeclaration:
-    def __init__(self, name: str, type: str, expr, pos=None):
+    def __init__(self, name: str, type, expr, pos=None):
         self.name = name
         self.type = type
         self.expr = expr
@@ -262,8 +268,8 @@ class ImportDeclaration:
                source: str | None = None,
                module: str | None = None,
                name:   str | None = None,
-               params: list[str] = None, # type: ignore
-               return_type: str | None = None,
+               params = None,
+               return_type = None,
                pos=None):
       self.source      = source       # e.g. "math.mun"
       self.module      = module       # e.g. "env" or "random"
@@ -281,6 +287,8 @@ class ImportDeclaration:
 
 class TypeExpr:
     def __init__(self, name, params = None, pos = None):
+        if not isinstance(name, str):
+            raise TypeError(f"name must be a str, cannot be {type(name)}")
         self.name = name
         self.params = params or []
         self.pos = pos
@@ -288,5 +296,14 @@ class TypeExpr:
     def __str__(self):
         params = ""
         if self.params:
-            params = f"<{', '.join(self.params)}>"
+            params = f"<{', '.join(param.name for param in self.params)}>"
         return f"{self.name}{params}"
+    
+    def __eq__(self, other):
+        return (
+            isinstance(other, TypeExpr)
+            and self.name == other.name
+            and self.params == other.params
+        )
+    def __hash__(self):
+        return hash((self.name, tuple(self.params)))
