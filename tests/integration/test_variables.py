@@ -28,9 +28,9 @@ void main() {
 void main()
 {
     boolean flag = true;
-    print(flag);
+    if (flag) { print(1); } else { print(0); }
     flag = false;
-    print(flag);
+    if (flag) { print(1); } else { print(0); }
      
 }
 """,  ["1", "0"]),
@@ -55,11 +55,23 @@ void main()
     int b = 5;
     int y = 6;
     boolean cmp = a > b;
-    print(cmp);
+    if (cmp) {
+        print(1);
+     } else {
+        print(0);
+     }
     boolean cmp2 = y == 6;
-    print(cmp2);
+    if (cmp2) {
+        print(1);
+     } else {
+        print(0);
+     }
     boolean cmp3 = y != 6;
-    print(cmp3);
+    if (cmp3) {
+        print(1);
+     } else {
+        print(0);
+     }
 }
 
 
@@ -77,7 +89,7 @@ void main()
 {
     boolean cmp = true;
     boolean notcmp = !cmp;
-    print(notcmp);
+    if (notcmp) { print(1); } else { print(0); }
 }
 """, ["0"]),
     ("""
@@ -90,7 +102,7 @@ void main()
     c = c * 2 + c % 3;
     print(c);
     boolean b = (a > c) && flag;
-    print(b);
+    if (b) { print(1); } else { print(0); }
 }
 """, ["2", "6", "1"]),
     ("""

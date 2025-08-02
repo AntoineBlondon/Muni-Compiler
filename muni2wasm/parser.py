@@ -150,8 +150,12 @@ class Parser:
     def parse_import_declaration(self):
         tok = self.expect("IMPORT_KW")
         # --- source-file import ---
-        if self.peek() == "PATH":
-            path = self.next().text[1:-1]      # strip <…>
+        if self.peek() == "LT":
+            self.expect("LT")
+            path = ""
+            while self.peek() != "GT":
+                path += self.next().text
+            self.expect("GT")
             self.expect("SEMI")
             return self.ast.ImportDeclaration(source=path, pos=(tok.line,tok.col))
 
@@ -577,7 +581,7 @@ class Parser:
         lhs = self.parse_unary()
 
         while (
-            self.peek() == "OP" and 
+            self.peek() in ["OP", "LT", "GT"] and 
             (op := self.tokens[self.pos].text) in self.OP_PRECEDENCE
         ):
             prec, assoc = self.OP_PRECEDENCE[op]

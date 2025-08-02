@@ -276,3 +276,17 @@ class ImportDeclaration:
           return f'import <{self.source}>;'
       ps = ", ".join(self.params)
       return f'import {self.module}.{self.name}({ps}) -> {self.return_type};'
+  
+
+
+class TypeExpr:
+    def __init__(self, name, params = None, pos = None):
+        self.name = name
+        self.params = params or []
+        self.pos = pos
+
+    def __str__(self):
+        params = ""
+        if self.params:
+            params = f"<{', '.join(self.params)}>"
+        return f"{self.name}{params}"
