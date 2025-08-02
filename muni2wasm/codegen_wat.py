@@ -62,6 +62,20 @@ class CodeGen:
             if isinstance(d, StructureDeclaration):
                 self._collect_struct(d)
 
+        # --- emit all static‐struct fields as immutable globals ---
+        for d in self.program.decls:
+            if isinstance(d, StructureDeclaration):
+                for sf in d.static_fields:
+                    # sf.expr is either Number or BooleanLiteral
+                    if isinstance(sf.expr, Number):
+                        val = sf.expr.value
+                    else:
+                        # boolean: true→1, false→0
+                        val = 1 if sf.expr.value else 0
+                    self.out.append(
+                        f'  (global ${d.name}_{sf.name} i32 (i32.const {val}))'
+                    )
+
         # emit struct methods
         for d in self.program.decls:
             if isinstance(d, StructureDeclaration):
@@ -466,10 +480,17 @@ class CodeGen:
                 "*":  "i32.mul", "/":  "i32.div_s", "%": "i32.rem_s",
             }
             self.emit(opmap[expr.op])
+        # static‐field access (math.pi → global.get $math_pi)
+        elif isinstance(expr, MemberAccess) and getattr(expr, "is_static_field", False):
+            self.emit(f"global.get ${expr.struct_name}_{expr.field}")
+            return
+
+        # instance‐field access
         elif isinstance(expr, MemberAccess):
             self.gen_expr(expr.obj)
             off = self.struct_layouts[expr.struct_name]["offsets"][expr.field]
             self.emit(f"i32.load offset={off}")
+            return
         elif isinstance(expr, MethodCall):
             fn = f"{expr.struct_name}_{expr.method}"
             if isinstance(expr.receiver, Ident) and expr.receiver.name == expr.struct_name:

@@ -48,6 +48,24 @@ def check(program: Program):
                 raise SemanticError(f"Structure '{d.name}' redefined", d.pos)
             structs[d.name] = d
 
+    for struct_name, sd in structs.items():
+        for sf in sd.static_fields:
+            # only literal initializers allowed:
+            if isinstance(sf.expr, Number):
+                init_t = "int"
+            elif isinstance(sf.expr, BooleanLiteral):
+                init_t = "boolean"
+            else:
+                raise SemanticError(
+                f"Static initializer for '{sf.name}' must be a literal",
+                sf.pos
+                )
+            if init_t != sf.type:
+                raise SemanticError(
+                    f"Cannot assign {init_t} to static {sf.type} '{sf.name}'",
+                    sf.pos
+                )
+        
     # --- compute memory layouts for constructors ---
     struct_layouts = {
         name: {
@@ -300,6 +318,14 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret,
 
         # --- field access ---
         if isinstance(expr, MemberAccess):
+            # static‐field access: math.pi
+            if isinstance(expr.obj, Ident) and expr.obj.name in structs:
+                sd = structs[expr.obj.name]
+                sf = next((f for f in sd.static_fields if f.name==expr.field), None)
+                if sf is not None:
+                    expr.struct_name = expr.obj.name
+                    expr.is_static_field = True # type: ignore
+                    return sf.type
             obj_t = infer(expr.obj)
             if obj_t not in structs:
                 raise SemanticError(f"Cannot access field on non-structure '{obj_t}'", pos)
@@ -345,6 +371,8 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret,
 
         elif isinstance(stmt, MemberAssignment):
             # LHS must be MemberAccess
+            if getattr(stmt.obj, "is_static_field", False):
+                raise SemanticError(f"Cannot assign to static field '{stmt.field}'", stmt.pos)
             lhs_t = infer(stmt.obj)
             if not hasattr(stmt.obj, "struct_name"):
                 raise SemanticError("Invalid left-hand side in member assignment", pos)

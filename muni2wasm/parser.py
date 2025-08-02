@@ -150,10 +150,32 @@ class Parser:
         struct_name = name_tok.text
         self.expect("LBRACE")
 
-        fields, methods = [], []
+        fields, static_fields, methods = [], [], []
         while self.peek() != "RBRACE":
 
-            # --- 1) constructor?  IDENT == struct_name + LPAREN ---
+            # --- static field? ---
+            if self.peek()=="STATIC_KW" and self.tokens[self.pos+3].kind=="ASSIGN":
+                st_tok = self.next()                         # STATIC_KW
+                # parse type (INT_KW|BOOL_KW|IDENT)
+                if self.peek() in ("INT_KW","BOOL_KW"):
+                    ty_tok = self.next()
+                    ty = "int" if ty_tok.kind=="INT_KW" else "boolean"
+                elif self.peek()=="IDENT":
+                    ty_tok = self.next()
+                    ty = ty_tok.text
+                else:
+                    t = self.peek_token()
+                    raise SyntaxError(f"{t.line}:{t.col}: Unexpected static‐field type {self.peek()}")
+                name_tok = self.expect("IDENT")
+                self.expect("ASSIGN")
+                init = self.parse_expr()
+                self.expect("SEMI")
+                static_fields.append(
+                    self.ast.StaticFieldDeclaration(name_tok.text, ty, init,
+                                                    pos=(ty_tok.line,ty_tok.col))
+                )
+                continue
+            # --- constructor?  IDENT == struct_name + LPAREN ---
             if (self.peek()=="IDENT"
                 and self.tokens[self.pos].text == struct_name
                 and self.tokens[self.pos+1].kind == "LPAREN"):
@@ -198,7 +220,7 @@ class Parser:
                 ))
                 continue
 
-            # --- 2) ordinary field? type can be int, boolean or any struct IDENT ---
+            # --- ordinary field? type can be int, boolean or any struct IDENT ---
             if (self.peek() in ("INT_KW","BOOL_KW","IDENT")
                 and self.tokens[self.pos+2].kind == "SEMI"):
                 tok_type = self.next()
@@ -218,7 +240,7 @@ class Parser:
                 continue
 
 
-            # --- 3) method (static or instance) ---
+            # --- method (static or instance) ---
             is_static = False
             if self.peek() == "STATIC_KW":
                 self.next()
@@ -281,7 +303,7 @@ class Parser:
 
         self.expect("RBRACE")
         return self.ast.StructureDeclaration(
-            struct_name, fields, methods,
+            struct_name, fields, static_fields, methods,
             pos=(kw.line, kw.col)
         )
 

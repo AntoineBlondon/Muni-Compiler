@@ -134,19 +134,36 @@ class MethodDeclaration:
         ps = ", ".join(f"{t} {n}" for n,t in self.params)
         return f"{static}{self.return_type} {self.name}({ps}) {{…}}"
 
+class StaticFieldDeclaration:
+    def __init__(self, name: str, type: str, expr, pos=None):
+        self.name = name
+        self.type = type
+        self.expr = expr
+        self.pos = pos
+    def __str__(self):
+        return f"static {self.type} {self.name} = {self.expr}"
 
 class StructureDeclaration:
     def __init__(self, name: str, fields: list[FieldDeclaration],
+                 static_fields: list[StaticFieldDeclaration],
                  methods: list[MethodDeclaration], pos=None):
         self.name = name
         self.fields = fields
+        self.static_fields = static_fields
         self.methods = methods
         self.pos = pos
 
     def __str__(self):
         fs = "\n    ".join(str(f) for f in self.fields)
+        sfs = "\n    ".join(str(f) for f in self.static_fields)
         ms = "\n    ".join(str(m) for m in self.methods)
-        return f"struct {self.name} {{\n    {fs}\n    {ms}\n}}"
+        return (
+            f"struct {self.name} {{\n"
+            + (f"    {sfs}\n" if sfs else "")
+            + (f"    {fs}\n" if fs else "")
+            + (f"    {ms}\n" if ms else "")
+            + "}"
+        )
     
 class MemberAccess:
     def __init__(self, obj, field, pos=None):
