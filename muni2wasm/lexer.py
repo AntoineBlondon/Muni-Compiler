@@ -31,6 +31,8 @@ TOKEN_SPEC = [
     (r"\)",                     "RPAREN"),
     (r"\{",                     "LBRACE"),
     (r"\}",                     "RBRACE"),
+    (r"\[",                     "LBRACK"),
+    (r"\]",                     "RBRACK"),
     (r"#.*",                     None),
     (r"/\*[\s\S]*?\*/",          None),
     (r"\s+",                     None),

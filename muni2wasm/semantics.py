@@ -22,6 +22,7 @@ from .ast import (
     MemberAssignment,
     MethodCall,
     NullLiteral,
+    ListLiteral,    
 )
 
 class SemanticError(Exception):
@@ -122,6 +123,32 @@ def check_block(stmts, symbol_table, func_sigs, expected_ret,
         # --- null literal (`void`) ---
         if isinstance(expr, NullLiteral):
             return "*"   # wildcard pointer
+
+        if isinstance(expr, ListLiteral):
+            if not expr.elements:
+                raise SemanticError("Cannot create empty list literal", expr.pos)
+            # all elements must have same type
+            first_ty = infer(expr.elements[0])
+            for e in expr.elements[1:]:
+                t = infer(e)
+                if t != first_ty:
+                    raise SemanticError(
+                        f"List literal elements must all be {first_ty}, got {t}", e.pos
+                    )
+            # must have a struct called “list” with a one‐arg constructor
+            if "list" not in structs:
+                raise SemanticError("No structure 'list' defined for list literal", expr.pos)
+            sd = structs["list"]
+            ctor = next((m for m in sd.methods if m.name=="list" and m.is_static), None)
+            if ctor is None:
+                raise SemanticError("Structure 'list' has no constructor", expr.pos)
+            # constructor must take exactly one param of that element type
+            if len(ctor.params)!=1 or ctor.params[0][1]!=first_ty:
+                raise SemanticError(
+                  f"Constructor list({ctor.params}) not compatible with element type {first_ty}",
+                  expr.pos
+                )
+            return "list"
 
         # --- local var or `this` ---
         if isinstance(expr, Ident):

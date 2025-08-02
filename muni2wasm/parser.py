@@ -554,6 +554,19 @@ class Parser:
             self.next()
             return self.ast.BooleanLiteral(False, pos=(line,col))
 
+        # --- list‐literal sugar: [ e1, e2, … ] ---
+        if kind == "LBRACK":
+           self.next()  # consume “[”
+           elems = []
+           if self.peek() != "RBRACK":
+               while True:
+                   elems.append(self.parse_expr())
+                   if self.peek() == "COMMA":
+                       self.next(); continue
+                   break
+           self.expect("RBRACK")
+           return self.ast.ListLiteral(elems, pos=(line,col))
+
         if kind == "NULL_KW":
             self.next()
             return self.ast.NullLiteral(pos=(line,col))

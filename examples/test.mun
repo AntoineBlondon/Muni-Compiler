@@ -17,17 +17,22 @@ structure list
             this.next.append(other);
         }
     }
+
+    void print()
+    {
+        list cur = this;
+        while (cur != null) {
+            print(cur.value);
+            cur = cur.next;
+        }
+    }
 }
 
 void main()
 {
-    list x = list(2);
-    list y = list(1);
-    x.append(y);
+    list x = [1, 2, 3, 4];
+
+    x.print();
+
     
-    list cur = x;
-    while (cur != null) {
-        print(cur.value);
-        cur = cur.next;
-    }
 }

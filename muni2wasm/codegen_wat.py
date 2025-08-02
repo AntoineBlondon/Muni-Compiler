@@ -23,6 +23,7 @@ from .ast import (
     MethodDeclaration,
     MethodCall,
     NullLiteral,
+    ListLiteral,
 )
 
 class CodeGen:
@@ -180,6 +181,30 @@ class CodeGen:
 
     def gen_stmt(self, stmt):
         # VariableDeclaration
+
+        if isinstance(stmt, VariableDeclaration) \
+           and isinstance(stmt.expr, ListLiteral) \
+           and stmt.type == "list":
+
+            # 1) head = list(e1)
+            first = stmt.expr.elements[0]
+            # generate a call to the list‐constructor
+            self.gen_expr(FunctionCall("list", [first], pos=stmt.pos))
+            self.emit(f"local.set ${stmt.name}")
+
+            # 2) for each remaining element: x.append(list(e))
+            for elt in stmt.expr.elements[1:]:
+                # make the new node
+                self.gen_expr(FunctionCall("list", [elt], pos=stmt.pos))
+                # call x.append(newNode)
+                self.emit(f"local.get ${stmt.name}")    # push x (the head)
+                self.emit("local.get $__struct_ptr")    # push the newly‐made node
+                # instance‐method append compiled to (func $list_append (param $this i32) (param $other i32))
+                self.emit(f"call $list_append")
+
+            # 3) leave head on stack so that the surrounding `local.set $x` in the caller doesn’t lose it
+            self.emit(f"local.get ${stmt.name}")
+            return
         if isinstance(stmt, VariableDeclaration):
             if stmt.expr is not None:
                 self.gen_expr(stmt.expr)

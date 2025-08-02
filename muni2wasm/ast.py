@@ -230,3 +230,11 @@ class VoidStatement:
 class NullLiteral:
     def __init__(self, pos=None):
         self.pos = pos
+
+
+class ListLiteral:
+    def __init__(self, elements: list, pos=None):
+        self.elements = elements  # list of Expr
+        self.pos = pos
+    def __str__(self):
+        return "[" + ", ".join(str(e) for e in self.elements) + "]"
