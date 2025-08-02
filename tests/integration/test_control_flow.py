@@ -118,6 +118,44 @@ cases = [
      
     }
      """, ["1"]),
+    
+    ("""
+
+    void main() {
+        int sum = 0;
+        while (sum != 5) {
+            sum = sum + 1;
+        }
+        print(sum);
+     }
+
+""", ["5"]),
+
+    ("""
+
+    void main() {
+        while (true) {
+            break;
+        }
+        print(1);
+     }
+
+""", ["1"]),
+
+("""
+void main() {
+    int sum = 0;
+    while (sum < 10) {
+        sum = sum + 1;
+        if (sum % 2 != 0) {
+            continue;
+        }
+        print(sum);
+    }
+}
+
+""", ["2", "4", "6", "8", "10"]),
+
 ]
 
 @pytest.mark.parametrize("src,expected", cases)
