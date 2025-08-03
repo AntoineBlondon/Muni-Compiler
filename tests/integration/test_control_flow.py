@@ -156,6 +156,117 @@ void main() {
 
 """, ["2", "4", "6", "8", "10"]),
 
+("""
+void main() {
+    int sum = 0;
+    until (sum >= 5) {
+        sum = sum + 1;
+    }
+ print(sum);
+}
+
+""", ["5"]),
+
+("""
+void main() {
+    until (false) {
+        break;
+    }
+ print(-6);
+}
+
+""", ["-6"]),
+
+("""
+void main() {
+    until (false) {
+        break;
+    }
+ print(-6);
+}
+
+""", ["-6"]),
+
+("""
+void main() {
+    until (false) {
+        break;
+    } else {
+    print(1);
+ }
+ print(8);
+}
+
+""", ["8"]),
+
+
+("""
+void main() {
+    int x = 0;
+    until (x == 2) {
+        x = x + 1; 
+    } else {
+    print(4);
+ }
+ print(5);
+}
+
+""", ["4", "5"]),
+
+("""
+void main() {
+    int x = 0;
+    int sum = 0;
+    until (x == 10) {
+        x = x + 1;
+        if (x % 2 == 0) {
+            continue;
+        }
+        sum = sum + x;
+    }
+ print(sum);
+}
+
+""", ["25"]),
+
+
+("""
+void main() {
+    do {
+    print(1);
+    }
+    print(2);
+}
+
+""", ["1", "2"]),
+
+
+("""
+void main() {
+    do {
+        print(1);
+    } else {
+        print(3);
+    }
+    print(2);
+}
+
+""", ["1", "3", "2"]),
+
+
+("""
+void main() {
+    do {
+        print(1);
+        break;
+    } else {
+        print(3);
+    }
+    print(2);
+}
+
+""", ["1", "2"]),
+
 ]
 
 @pytest.mark.parametrize("src,expected", cases)
