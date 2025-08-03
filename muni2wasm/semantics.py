@@ -1,3 +1,5 @@
+# mun2wasm/semantics.py
+
 from .ast import (
     Program,
     FunctionDeclaration,
@@ -24,14 +26,15 @@ from .ast import (
     NullLiteral,
     ListLiteral,
     ImportDeclaration,
-    TypeExpr
+    TypeExpr,
 )
+from collections import defaultdict
 
 class SemanticError(Exception):
     def __init__(self, message, pos=None):
         super().__init__(message)
         self.message = message
-        self.pos = pos
+        self.pos     = pos
 
     def __str__(self):
         if self.pos:
@@ -39,125 +42,248 @@ class SemanticError(Exception):
         return self.message
 
 def check(program: Program):
-    # --- collect top-level declarations ---
+    # ---
+    # 1) Gather host-imports & free functions
+    # ---
     imports    = [d for d in program.decls if isinstance(d, ImportDeclaration)]
     func_decls = [d for d in program.decls if isinstance(d, FunctionDeclaration)]
-    stmts      = [d for d in program.decls
-                  if not isinstance(d, (FunctionDeclaration, StructureDeclaration, ImportDeclaration))]
+    top_stmts  = [
+        d for d in program.decls
+        if not isinstance(d, (ImportDeclaration, FunctionDeclaration, StructureDeclaration))
+    ]
 
-    # --- collect struct definitions ---
-    structs: dict[TypeExpr, StructureDeclaration] = {}
+    # ---
+    # 2) Gather struct‐templates
+    #    key: struct name → ( type_params: list[str], sd:StructureDeclaration )
+    # ---
+    struct_templates: dict[str, tuple[list[str],StructureDeclaration]] = {}
+    
     for d in program.decls:
         if not isinstance(d, StructureDeclaration):
             continue
-        key = TypeExpr(d.name)
-        if key in structs:
+        if d.name in struct_templates:
             raise SemanticError(f"Structure '{d.name}' redefined", d.pos)
-        structs[key] = d
+        struct_templates[d.name] = (d.type_params, d)
 
-    # --- check static‐field initializers ---
-    for sd in structs.values():
+    structs: dict[TypeExpr, StructureDeclaration] = {}
+    for name, (_tparams, sd) in struct_templates.items():
+        structs[TypeExpr(name)] = sd
+    # ---
+    # 3) Validate each struct’s **definition** (static fields, field decls, method signatures)
+    #    *but* do _not_ yet check bodies under concrete type args
+    # ---
+    for struct_name, (tparams, sd) in struct_templates.items():
+        # 3a) static‐field initializers must be literals
         for sf in sd.static_fields:
             if isinstance(sf.expr, Number):
                 init_t = TypeExpr("int")
             elif isinstance(sf.expr, BooleanLiteral):
                 init_t = TypeExpr("boolean")
             else:
-                raise SemanticError(f"Static initializer for '{sf.name}' must be a literal", sf.pos)
+                raise SemanticError(
+                    f"Static initializer for '{sf.name}' must be a literal",
+                    sf.pos
+                )
             if init_t != sf.type:
-                raise SemanticError(f"Cannot assign {init_t} to static {sf.type} '{sf.name}'", sf.pos)
+                raise SemanticError(
+                    f"Cannot assign {init_t} to static {sf.type} '{sf.name}'",
+                    sf.pos
+                )
+        # 3b) every field’s declared type must be either
+        #     - a built-in (int, boolean, void),
+        #     - another struct template name (no params here),
+        #     - or one of this struct’s type_params
+        for f in sd.fields:
+            tn = f.type.name
+            if tn in ("int","boolean","void"):
+                continue
+            if tn in tparams:
+                continue
+            if tn not in struct_templates:
+                raise SemanticError(f"Unknown field type '{tn}'", f.pos)
 
-    # --- compute struct layouts for codegen ---
-    struct_layouts = {
-        key: {
-            "size":    len(sd.fields) * 4,
-            "offsets": { f.name: i*4 for i, f in enumerate(sd.fields) }
-        }
-        for key, sd in structs.items()
-    }
+        # 3c) each method’s signature may refer to
+        #     - built-ins,
+        #     - any struct name,
+        #     - or any of (struct_type_params ∪ method.type_params)
+        for m in sd.methods:
+            # build the **set** of type‐vars in scope
+            scope_tvars = set(tparams) | set(m.type_params)
+            def check_type(ty: TypeExpr):
+                # bare var
+                if not ty.params and ty.name in scope_tvars:
+                    return
+                # built-in
+                if ty.name in ("int","boolean","void"):
+                    if ty.params:
+                        raise SemanticError(f"Type '{ty}' may not have parameters", m.pos)
+                    return
+                # struct instantiation
+                if ty.name in struct_templates:
+                    # correct number of params?
+                    needed = len(struct_templates[ty.name][0])
+                    if len(ty.params) != needed:
+                        raise SemanticError(
+                            f"Type '{ty.name}' expects {needed} parameter(s), got {len(ty.params)}",
+                            m.pos
+                        )
+                    # recurse
+                    for sub in ty.params:
+                        check_type(sub)
+                    return
+                raise SemanticError(f"Unknown type '{ty}'", m.pos)
 
-    # --- build global function signatures (including generics) ---
-    #  name -> ( type_params: list[str],
-    #            param_types: list[TypeExpr],
-    #            return_type: TypeExpr )
-    func_sigs: dict[str, tuple[list[str], list[TypeExpr], TypeExpr]] = {}
+            # return type
+            check_type(m.return_type)
+            # param types
+            for _, pty in m.params:
+                check_type(pty)
 
-    # host imports
+    # ---
+    # 4) build global function signatures (including generics)
+    #    name → ( type_params, param_types, return_type )
+    # ---
+    func_sigs: dict[str, tuple[list[str],list[TypeExpr],TypeExpr]] = {}
+
+    # 4a) host imports
     for imp in imports:
         if imp.name in func_sigs:
             raise SemanticError(f"Function '{imp.name}' redefined", imp.pos)
-        # params are strings (names of basic types), return is string or TypeExpr
-        sig_params = [ p for p in imp.params ]
-        sig_ret    = imp.return_type if isinstance(imp.return_type, str) else imp.return_type
-        func_sigs[imp.name] = ([], sig_params, sig_ret)  # no type-params # type: ignore
+        func_sigs[imp.name] = ([], imp.params, imp.return_type) # type: ignore
 
-    # user‐defined functions (may be generic)
+    # 4b) user functions
     for fd in func_decls:
         if fd.name in func_sigs:
             raise SemanticError(f"Function '{fd.name}' redefined", fd.pos)
-        param_tys = [ pty for _, pty in fd.params ]
+        param_tys = [ pty for _,pty in fd.params ]
         func_sigs[fd.name] = (fd.type_params, param_tys, fd.return_type)
 
-    # --- bookkeeping for generics ---
-    # which functions are generic?
-    generic_funcs = { fd.name for fd in func_decls if fd.type_params }
-    # which instantiations have we checked?
-    checked_instantiations: set[tuple[str, tuple[TypeExpr, ...]]] = set()
+    # which free functions are generic?
+    generic_funcs = { f.name for f in func_decls if f.type_params }
+    checked_func_insts = set()  # (fname, tuple[TypeExpr,...])
 
-    # --- nested type-checker, with on‐demand generic instantiation ---
-    def check_block(stmts, symbol_table, expected_ret, in_loop=False):
+    # ---
+    # 5) helper: monomorphize + type-check one struct‐template <…> inst
+    #    we must check its *constructor* + *all instance methods* under the substitution
+    #    only once per (struct_name, type_args)
+    # ---
+    checked_struct_insts = set()  # (struct_name, tuple[TypeExpr,...])
+
+    def instantiate_struct(name: str, args: list[TypeExpr]):
+        key = (name, tuple(args))
+        if key in checked_struct_insts:
+            return
+        checked_struct_insts.add(key)
+
+        tparams, sd = struct_templates[name]
+        # build substitution map: Tvar → actual TypeExpr
+        sub_map = dict(zip(tparams, args))
+
+        structs[ TypeExpr(name, list(args)) ] = sd
+        # helper to substitute in any TypeExpr
+        def subst(ty: TypeExpr) -> TypeExpr:
+            if not ty.params and ty.name in sub_map:
+                return sub_map[ty.name]
+            return TypeExpr(ty.name, [subst(c) for c in ty.params])
+
+        # build a synthetic global func_sigs & structs visible for checking bodies
+        #   here `structs` maps bare-TypeExpr(name) → Definition
+        #   but for infer we only need lookup by name-part
+        ...
+
+        # type-check the static constructor
+        ctor = next((m for m in sd.methods
+                     if m.is_static and m.name == name), None)
+        if ctor:
+            # sym: parameters + this
+            sym = {}
+            sym['this'] = TypeExpr(name, args)
+            for pname, pty in ctor.params:
+                sym[pname] = subst(pty)
+            check_block(ctor.body, sym,
+                        expected_ret=TypeExpr(name,args),
+                        in_loop=False,
+                        struct_subst=sub_map,
+                        method_subst={})
+
+        # type-check each instance method
+        for m in sd.methods:
+            if m.is_static and m.name == name:
+                continue
+            # sym: this + params
+            sym = {}
+            sym['this'] = TypeExpr(name, args)
+            for pname, pty in m.params:
+                sym[pname] = subst(pty)
+            check_block(m.body, sym,
+                        expected_ret=subst(m.return_type),
+                        in_loop=False,
+                        struct_subst=sub_map,
+                        method_subst={})
+
+    # ---
+    # 6) the main type-checker (expressions + statements)
+    #    carries two substitution maps:
+    #      - struct_subst: mapping struct-template Tvars→actual (only inside a method inst)
+    #      - method_subst: mapping method-template Tvars→actual
+    # ---
+    def check_block(stmts: list, symbol_table: dict,
+                    expected_ret: TypeExpr,
+                    in_loop: bool,
+                    struct_subst: dict[str,TypeExpr]={},
+                    method_subst: dict[str,TypeExpr]={}):
+
+        def subst(ty: TypeExpr) -> TypeExpr:
+            # first method‐params, then struct‐params
+            if not ty.params:
+                if ty.name in method_subst:
+                    return method_subst[ty.name]
+                if ty.name in struct_subst:
+                    return struct_subst[ty.name]
+            return TypeExpr(ty.name, [subst(c) for c in ty.params])
+
         def infer(expr):
             pos = getattr(expr, "pos", None)
 
-            # primitives
+            # literals
             if isinstance(expr, Number):
                 return TypeExpr("int")
             if isinstance(expr, BooleanLiteral):
                 return TypeExpr("boolean")
             if isinstance(expr, NullLiteral):
-                return TypeExpr("*")  # wildcard pointer
+                return TypeExpr("*")  # null‐pointer wildcard
 
-            # list literal sugar
+            # list‐literal sugar (unchanged—uses bare 'list' ctor)
             if isinstance(expr, ListLiteral):
                 if not expr.elements:
-                    raise SemanticError("Cannot create empty list literal", expr.pos)
+                    raise SemanticError("Cannot create empty list literal", pos)
                 first_ty = infer(expr.elements[0])
                 for e in expr.elements[1:]:
                     t = infer(e)
                     if t != first_ty:
-                        raise SemanticError(
-                            f"List literal elements must all be {first_ty}, got {t}", e.pos
-                        )
-                list_ty = TypeExpr("list")
-                if list_ty not in structs:
-                    raise SemanticError("No structure 'list' defined for list literal", expr.pos)
-                sd = structs[list_ty]
-                ctor = next((m for m in sd.methods if m.name == "list" and m.is_static), None)
-                if ctor is None or len(ctor.params) != 1 or ctor.params[0][1] != first_ty:
-                    raise SemanticError(
-                        f"Constructor list({ctor.params if ctor else []}) not compatible with element type {first_ty}",
-                        expr.pos
-                    )
-                return list_ty
+                        raise SemanticError(f"List elements must all be {first_ty}, got {t}", e.pos)
+                # instantiate `list<…>` if needed
+                instantiate_struct("list", [first_ty])
+                return TypeExpr("list", [first_ty])
 
-            # variable or `this`
+            # variable / this
             if isinstance(expr, Ident):
                 if expr.name not in symbol_table:
                     raise SemanticError(f"Undefined variable '{expr.name}'", pos)
                 return symbol_table[expr.name]
 
-            # unary/binary ops
+            # unary/binary (same as before, but `==` can compare pointers/wildcards)
             if isinstance(expr, UnaryOp):
                 t = infer(expr.expr)
                 if expr.op == "!":
                     if t != TypeExpr("boolean"):
-                        raise SemanticError(f"Operator '!' expects boolean, got {t}", pos)
+                        raise SemanticError(f"'!' expects boolean, got {t}", pos)
                     return TypeExpr("boolean")
                 if expr.op == "-":
                     if t != TypeExpr("int"):
                         raise SemanticError(f"Unary '-' expects int, got {t}", pos)
                     return TypeExpr("int")
-                raise SemanticError(f"Unknown unary operator '{expr.op}'", pos)
+                raise SemanticError(f"Unknown unary '{expr.op}'", pos)
 
             if isinstance(expr, BinOp):
                 lt, rt = infer(expr.left), infer(expr.right)
@@ -170,7 +296,7 @@ def check(program: Program):
                         return TypeExpr("boolean")
                     raise SemanticError(f"Comparison '{expr.op}' expects ints, got {lt},{rt}", pos)
                 if expr.op in ("==","!="):
-                    # ints or pointers
+                    # ints‐ints or pointers‐pointers/null
                     if lt == rt or (lt == TypeExpr("*") and rt not in (TypeExpr("int"),TypeExpr("boolean"))) \
                                 or (rt == TypeExpr("*") and lt not in (TypeExpr("int"),TypeExpr("boolean"))):
                         return TypeExpr("boolean")
@@ -179,130 +305,176 @@ def check(program: Program):
                     if lt == rt == TypeExpr("boolean"):
                         return TypeExpr("boolean")
                     raise SemanticError(f"Logical '{expr.op}' expects booleans, got {lt},{rt}", pos)
-                raise SemanticError(f"Unknown binary operator '{expr.op}'", pos)
+                raise SemanticError(f"Unknown binary '{expr.op}'", pos)
 
-            # method call
+            # --- method call ---
             if isinstance(expr, MethodCall):
-                # static
-                if isinstance(expr.receiver, Ident) and TypeExpr(expr.receiver.name) in structs:
-                    S = expr.receiver.name; sd = structs[TypeExpr(S)]
-                    md = next((m for m in sd.methods if m.name == expr.method), None)
-                    if md is None:
-                        raise SemanticError(f"Structure '{S}' has no method '{expr.method}'", pos)
-                    if not md.is_static:
-                        raise SemanticError(f"Cannot call instance method '{expr.method}' without an object", pos)
-                    if len(expr.args) != len(md.params):
-                        raise SemanticError(f"Static method '{S}.{expr.method}' expects {len(md.params)} args, got {len(expr.args)}", pos)
-                    for arg,(pn,pty) in zip(expr.args, md.params):
-                        at = infer(arg)
-                        if at != pty:
-                            raise SemanticError(f"In call to '{S}.{expr.method}', expected {pty}, got {at}", arg.pos)
-                    expr.struct_name = S
-                    return md.return_type
+                # first infer receiver
+                r_ty = subst(infer(expr.receiver))
+                expr.struct = r_ty # type: ignore
+                # must be a struct instantiation
+                if r_ty.name not in struct_templates:
+                    raise SemanticError(f"Cannot call method '{expr.method}' on non-struct '{r_ty}'", pos)
 
-                # instance
-                r_t = infer(expr.receiver)
-                if r_t not in structs:
-                    raise SemanticError(f"Cannot call method '{expr.method}' on non-struct '{r_t}'", pos)
-                sd = structs[r_t]
+                # ensure correct arity & on-demand instantiation
+                instantiate_struct(r_ty.name, r_ty.params)
+
+                # find the method declaration
+                _, sd = struct_templates[r_ty.name]
                 md = next((m for m in sd.methods if m.name == expr.method), None)
                 if md is None:
-                    raise SemanticError(f"Structure '{r_t}' has no method '{expr.method}'", pos)
+                    raise SemanticError(f"Structure '{r_ty.name}' has no method '{expr.method}'", pos)
+                # static vs instance
                 if md.is_static:
                     raise SemanticError(f"Cannot call static method '{expr.method}' on instance", pos)
-                if len(expr.args) != len(md.params):
-                    raise SemanticError(f"Method '{r_t}.{expr.method}' expects {len(md.params)} args, got {len(expr.args)}", pos)
-                for arg,(pn,pty) in zip(expr.args, md.params):
-                    at = infer(arg)
-                    if at != pty:
-                        raise SemanticError(f"In call to '{r_t}.{expr.method}', expected {pty}, got {at}", arg.pos)
-                expr.struct_name = r_t.name
-                return md.return_type
 
-            # free function or constructor
-            if isinstance(expr, FunctionCall):
-                # constructor
-                ctor_key = TypeExpr(expr.name)
-                if ctor_key in structs:
-                    sd = structs[ctor_key]
-                    ctor = next((m for m in sd.methods if m.name == expr.name and m.is_static), None)
-                    if ctor is None:
-                        raise SemanticError(f"Structure '{expr.name}' has no constructor", pos)
-                    if len(expr.args) != len(ctor.params):
-                        raise SemanticError(f"{expr.name}() expects {len(ctor.params)} args, got {len(expr.args)}", pos)
-                    for arg,(pn,pty) in zip(expr.args, ctor.params):
-                        at = infer(arg)
-                        if at != pty:
-                            raise SemanticError(f"In constructor {expr.name}(), field '{pn}' expects {pty}, got {at}", arg.pos)
-                    return ctor_key
-
-                # normal (possibly generic) function
-                if expr.name not in func_sigs:
-                    raise SemanticError(f"Call to undefined function '{expr.name}'", pos)
-                type_params, ptypes, rtype = func_sigs[expr.name]
-
-                # type‐arg arity
-                if len(expr.type_args) != len(type_params):
+                # type-parameter arity
+                if len(expr.type_args) != len(md.type_params):
                     raise SemanticError(
-                        f"Function '{expr.name}' expects {len(type_params)} type argument(s), got {len(expr.type_args)}",
+                        f"Method '{r_ty.name}.{md.name}' expects {len(md.type_params)} type-arg(s), got {len(expr.type_args)}",
                         pos
                     )
-
-                # substitute type‐variables
-                subst_map = { tp: targ for tp, targ in zip(type_params, expr.type_args) }
-                def subst(ty: TypeExpr) -> TypeExpr:
-                    if not ty.params and ty.name in subst_map:
-                        return subst_map[ty.name]
-                    return TypeExpr(ty.name, [subst(c) for c in ty.params])
-
-                inst_ptypes = [ subst(pt) for pt in ptypes ]
-                inst_rtype  = subst(rtype)
-
-                # argument arity & types
-                if len(expr.args) != len(inst_ptypes):
-                    raise SemanticError(f"Function '{expr.name}' expects {len(inst_ptypes)} arg(s), got {len(expr.args)}", pos)
-                for arg, pty in zip(expr.args, inst_ptypes):
+                # build method_subst & check args
+                m_sub = dict(zip(md.type_params, expr.type_args))
+                for arg, (pn, pty) in zip(expr.args, md.params):
                     at = infer(arg)
-                    if at != pty:
-                        raise SemanticError(f"In call to '{expr.name}', expected {pty}, got {at}", arg.pos)
+                    expty = subst(pty) if pty.params else subst(pty)
+                    if at != expty:
+                        raise SemanticError(
+                            f"In call to '{r_ty.name}.{md.name}', expected {expty}, got {at}",
+                            arg.pos
+                        )
+                return subst(md.return_type)
 
-                # monomorphize generic on first instantiation
-                if expr.name in generic_funcs:
-                    inst_key = (expr.name, tuple(expr.type_args))
-                    if inst_key not in checked_instantiations:
-                        checked_instantiations.add(inst_key)
-                        fd = next(f for f in func_decls if f.name == expr.name)
-                        body_sym = {
-                            pname: tyt for (pname,_), tyt in zip(fd.params, inst_ptypes)
-                        }
-                        check_block(fd.body, body_sym, inst_rtype, in_loop=False)
+            # --- constructor or free function call ---
+            if isinstance(expr, FunctionCall):
 
-                return inst_rtype
+                
+                # constructor?
+                if expr.name in struct_templates:
+                    # must supply struct-type-args
+                    tparams, sd = struct_templates[expr.name]
+                    if len(expr.type_args) != len(tparams):
+                        raise SemanticError(
+                            f"Constructor '{expr.name}' expects {len(tparams)} type-arg(s), got {len(expr.type_args)}",
+                            pos
+                        )
+                    # on-demand instantiate that struct
+                    instantiate_struct(expr.name, expr.type_args)
 
-            # field access
+                    # check constructor arity + param types
+                    ctor = next((m for m in sd.methods if m.is_static and m.name == expr.name), None)
+                    if ctor is None:
+                        raise SemanticError(f"No constructor for '{expr.name}'", pos)
+ 
+                    # build a fresh mapping from Tvar -> actual for *this* instantiation
+                    ctor_subs = dict(zip(tparams, expr.type_args))
+                    def map_ty(ty: TypeExpr) -> TypeExpr:
+                        # if it's a type-param, replace it
+                        if not ty.params and ty.name in ctor_subs:
+                            return ctor_subs[ty.name]
+                        # otherwise recurse into any parameters
+                        return TypeExpr(ty.name, [map_ty(c) for c in ty.params])
+ 
+                    for arg, (pn, pty) in zip(expr.args, ctor.params):
+                        at   = infer(arg)
+                        expty = map_ty(pty)
+                        if at != expty:
+                            raise SemanticError(
+                                f"In constructor {expr.name}(), field '{pn}' expects {expty}, got {at}",
+                                arg.pos
+                            )
+                    return TypeExpr(expr.name, expr.type_args)
+
+                # normal free function
+                if expr.name not in func_sigs:
+                    raise SemanticError(f"Call to undefined function '{expr.name}'", pos)
+                tparams, ptypes, rtype = func_sigs[expr.name]
+
+                # generic arity
+                if len(expr.type_args) != len(tparams):
+                    raise SemanticError(
+                        f"Function '{expr.name}' expects {len(tparams)} type-arg(s), got {len(expr.type_args)}",
+                        pos
+                    )
+                # build method_subst for free fn
+                f_sub = dict(zip(tparams, expr.type_args))
+                # instantiate free function if generic
+                inst_key = (expr.name, tuple(expr.type_args))
+                if expr.name in generic_funcs and inst_key not in checked_func_insts:
+                    checked_func_insts.add(inst_key)
+                    fd = next(f for f in func_decls if f.name == expr.name)
+                    # check its body once
+                    body_sym = {
+                        pname: TypeExpr(pty.name, [f_sub.get(c.name,c) for c in pty.params])
+                        for pname, pty in zip((p for p,_ in fd.params), ptypes)
+                    }
+                    check_block(fd.body, body_sym,
+                                expected_ret=TypeExpr(rtype.name, [f_sub.get(c.name,c) for c in rtype.params]),
+                                in_loop=False,
+                                struct_subst={},
+                                method_subst=f_sub)
+
+                # now check each arg
+                for arg, pty in zip(expr.args, ptypes):
+                    at = infer(arg)
+                    f_sub = dict(zip(tparams, expr.type_args))
+
+                # helper to apply f_sub to any TypeExpr
+                def fsubst(ty: TypeExpr) -> TypeExpr:
+                    # if this is a bare type‐param, replace it
+                    if not ty.params and ty.name in f_sub:
+                        return f_sub[ty.name]
+                    # otherwise recurse on its parameters
+                    return TypeExpr(ty.name, [fsubst(c) for c in ty.params])
+
+                # now check each argument against the substituted parameter‐type
+                for arg, pty in zip(expr.args, ptypes):
+                    at    = infer(arg)
+                    expty = fsubst(pty)         # ← use fsubst here
+                    if at != expty:
+                        raise SemanticError(
+                            f"In call to '{expr.name}', expected {expty}, got {at}",
+                            arg.pos
+                        )
+
+                # finally return the substituted return‐type
+                return fsubst(rtype)
+
+            # --- field access ---
             if isinstance(expr, MemberAccess):
-                # static field
-                if isinstance(expr.obj, Ident) and TypeExpr(expr.obj.name) in structs:
-                    sd = structs[TypeExpr(expr.obj.name)]
+                # static field?
+                if isinstance(expr.obj, Ident) and expr.obj.name in struct_templates:
+                    _, sd = struct_templates[expr.obj.name]
                     sf = next((f for f in sd.static_fields if f.name == expr.field), None)
                     if sf is not None:
-                        expr.struct_name = expr.obj.name
+                        expr.struct = expr.obj # type: ignore
                         expr.is_static_field = True  # type: ignore
                         return sf.type
-
                 # instance field
-                obj_t = infer(expr.obj)
-                if obj_t not in structs:
-                    raise SemanticError(f"Cannot access field on non-structure '{obj_t}'", pos)
-                sd = structs[obj_t]
-                for f in sd.fields:
-                    if f.name == expr.field:
-                        expr.struct_name = obj_t.name  # type: ignore
-                        return f.type
-                raise SemanticError(f"Structure '{obj_t}' has no field '{expr.field}'", pos)
+                r_ty = infer(expr.obj)
+                if r_ty.name not in struct_templates:
+                    raise SemanticError(f"Cannot access field on non-structure '{r_ty}'", pos)
+                instantiate_struct(r_ty.name, r_ty.params)
+ 
+                # pull out the template's own T-parameters:
+                tparams, sd = struct_templates[r_ty.name]
+                fd = next(f for f in sd.fields if f.name == expr.field)
+                expr.struct = r_ty
+        
+                # build a one-off map { "T" → actual }:
+                mapping = dict(zip(tparams, r_ty.params))
+                def map_ty(ty: TypeExpr) -> TypeExpr:
+                    # if this is a bare template variable, replace:
+                    if not ty.params and ty.name in mapping:
+                        return mapping[ty.name]
+                    # otherwise recurse into its parameters:
+                    return TypeExpr(ty.name, [map_ty(c) for c in ty.params])
+        
+                # now a.value is map_ty(T) → int
+                return map_ty(fd.type)
 
-            # if we get here, it's unhandled
-            raise NotImplementedError(f"Cannot infer type of expression: {expr}")
+            raise NotImplementedError(f"Cannot infer type of {expr}")
 
         # walk statements
         for stmt in stmts:
@@ -318,7 +490,7 @@ def check(program: Program):
                 else:
                     if stmt.expr is None:
                         raise SemanticError(f"Missing initializer for '{stmt.name}'", pos)
-                    rt = infer(stmt.expr)
+                    rt = subst(infer(stmt.expr))
                     if not (rt == stmt.type or (rt == TypeExpr("*") and stmt.type in structs)):
                         raise SemanticError(f"Cannot assign {rt} to {stmt.type} '{stmt.name}'", pos)
                     symbol_table[stmt.name] = stmt.type
@@ -336,31 +508,31 @@ def check(program: Program):
             if isinstance(stmt, MemberAssignment):
                 if getattr(stmt.obj, "is_static_field", False):
                     raise SemanticError(f"Cannot assign to static field '{stmt.field}'", stmt.pos)
-                lhs_t = infer(stmt.obj)
-                if not hasattr(stmt.obj, "struct_name"):
+                lhs_t = subst(infer(stmt.obj))
+                if not hasattr(stmt.obj, "struct"):
                     raise SemanticError("Invalid left-hand side in member assignment", pos)
-                rt = infer(stmt.expr)
+                rt = subst(infer(stmt.expr))
                 if not (rt == lhs_t or (rt == TypeExpr("*") and lhs_t in structs)):
-                    raise SemanticError(f"Cannot assign {rt} to field '{stmt.obj.field}' of type {lhs_t}", pos)
+                    raise SemanticError(f"Cannot assign {rt} to field '{stmt.obj.field}' of type {lhs_t}", pos) 
                 continue
 
             if isinstance(stmt, IfStmt):
                 ct = infer(stmt.cond)
                 if ct != TypeExpr("boolean"):
                     raise SemanticError(f"Condition of if must be boolean, got {ct}", stmt.cond.pos)
-                check_block(stmt.then_stmts, symbol_table.copy(), expected_ret, in_loop)
-                check_block(stmt.else_stmts, symbol_table.copy(), expected_ret, in_loop)
+                check_block(stmt.then_stmts, symbol_table.copy(), expected_ret, in_loop, struct_subst, method_subst)
+                check_block(stmt.else_stmts, symbol_table.copy(), expected_ret, in_loop, struct_subst, method_subst)
                 continue
 
             if isinstance(stmt, ForStmt):
                 backup = symbol_table.copy()
-                if stmt.init:  check_block([stmt.init], symbol_table, expected_ret, in_loop)
+                if stmt.init:  check_block([stmt.init], symbol_table, expected_ret, in_loop, struct_subst, method_subst)
                 ct = infer(stmt.cond) if stmt.cond else TypeExpr("boolean")
                 if stmt.cond and ct != TypeExpr("boolean"):
                     raise SemanticError(f"Condition of for must be boolean, got {ct}", stmt.cond.pos)
-                if stmt.post:  check_block([stmt.post], symbol_table, expected_ret, in_loop)
-                check_block(stmt.body, symbol_table, expected_ret, in_loop=True)
-                check_block(stmt.else_body, symbol_table, expected_ret, in_loop)
+                if stmt.post:  check_block([stmt.post], symbol_table, expected_ret, in_loop, struct_subst, method_subst)
+                check_block(stmt.body, symbol_table, expected_ret, True, struct_subst, method_subst)
+                check_block(stmt.else_body, symbol_table, expected_ret, in_loop, struct_subst, method_subst)
                 symbol_table.clear(); symbol_table.update(backup)
                 continue
 
@@ -369,8 +541,8 @@ def check(program: Program):
                 if ct != TypeExpr("boolean"):
                     raise SemanticError(f"Condition of while must be boolean, got {ct}", stmt.cond.pos)
                 backup = symbol_table.copy()
-                check_block(stmt.body, symbol_table, expected_ret, in_loop=True)
-                check_block(stmt.else_body, symbol_table, expected_ret, in_loop)
+                check_block(stmt.body, symbol_table, expected_ret, True, struct_subst, method_subst)
+                check_block(stmt.else_body, symbol_table, expected_ret, in_loop, struct_subst, method_subst)
                 symbol_table.clear(); symbol_table.update(backup)
                 continue
 
@@ -379,8 +551,8 @@ def check(program: Program):
                 if ct != TypeExpr("boolean"):
                     raise SemanticError(f"Condition of until must be boolean, got {ct}", stmt.cond.pos)
                 backup = symbol_table.copy()
-                check_block(stmt.body, symbol_table, expected_ret, in_loop=True)
-                check_block(stmt.else_body, symbol_table, expected_ret, in_loop)
+                check_block(stmt.body, symbol_table, expected_ret, True, struct_subst, method_subst)
+                check_block(stmt.else_body, symbol_table, expected_ret, in_loop, struct_subst, method_subst)
                 symbol_table.clear(); symbol_table.update(backup)
                 continue
 
@@ -390,12 +562,12 @@ def check(program: Program):
                     if ct != TypeExpr("int"):
                         raise SemanticError(f"Count in do‐repeat must be int, got {ct}", stmt.count.pos)
                 backup = symbol_table.copy()
-                check_block(stmt.body, symbol_table, expected_ret, in_loop=True)
+                check_block(stmt.body, symbol_table, expected_ret, True, struct_subst, method_subst)
                 if stmt.cond is not None:
                     ct = infer(stmt.cond)
                     if ct != TypeExpr("boolean"):
                         raise SemanticError(f"Condition of do‐while must be boolean, got {ct}", stmt.cond.pos)
-                check_block(stmt.else_body, symbol_table, expected_ret, in_loop)
+                check_block(stmt.else_body, symbol_table, expected_ret, in_loop, struct_subst, method_subst)
                 symbol_table.clear(); symbol_table.update(backup)
                 continue
 
@@ -429,44 +601,37 @@ def check(program: Program):
             # fallback for any other node
             infer(stmt)
 
-    # --- helper to see if a block always returns ---
-    def block_returns(stmts) -> bool:
-        for s in stmts:
-            if isinstance(s, ReturnStmt):
-                return True
-            if isinstance(s, IfStmt):
-                if block_returns(s.then_stmts) and block_returns(s.else_stmts):
-                    return True
-        return False
 
-    # --- type‐check struct methods ---
-    for struct_ty, sd in structs.items():
-        for m in sd.methods:
-            # build parameter table
-            sym = { pname: pty for pname, pty in m.params }
-            if not m.is_static:
-                sym['this'] = struct_ty
-            elif m.name == struct_ty.name:
-                # static constructor
-                sym['this'] = struct_ty
+        
+    for (struct_name, type_args) in list(checked_struct_insts):
+        instantiate_struct(struct_name, list(type_args))
 
-            check_block(m.body, sym, m.return_type, in_loop=False)
-            if m.return_type != TypeExpr("void") \
-               and not (m.is_static and m.name == struct_ty.name) \
-               and not block_returns(m.body):
-                raise SemanticError(f"Method '{struct_ty.name}.{m.name}' may exit without returning a value", m.pos)
+    # ---
+    # 7) Finally:
+    #   a) check every struct‐template’s *definition* has no top-level statements
+    #   b) if script-mode, check top_stmts
+    #   c) check every free non-generic function body
+    # ---
+    if "main" in func_sigs and top_stmts:
+        raise SemanticError("Top-level statements not allowed when 'main' is defined", top_stmts[0].pos)
+    if top_stmts and "main" not in func_sigs:
+        check_block(top_stmts, {}, expected_ret=TypeExpr("void"), in_loop=False)
 
-    # --- top‐level vs. script mode ---
-    if "main" in func_sigs and stmts:
-        raise SemanticError("Top-level statements not allowed when 'main' is defined", stmts[0].pos)
-    if stmts and "main" not in func_sigs:
-        check_block(stmts, {}, TypeExpr("void"), in_loop=False)
-
-    # --- finally, check every non-generic free function body ---
     for fd in func_decls:
         if fd.type_params:
             continue
-        sym = { name: ty for name, ty in fd.params }
-        check_block(fd.body, sym, fd.return_type, in_loop=False)
+        sym = { name: ty for name,ty in fd.params }
+        check_block(fd.body, sym, expected_ret=fd.return_type, in_loop=False)
+
+        # ensure non-void returns on every path
+        def block_returns(bs):
+            for s in bs:
+                if isinstance(s, ReturnStmt):
+                    return True
+                if isinstance(s, IfStmt):
+                    if block_returns(s.then_stmts) and block_returns(s.else_stmts):
+                        return True
+            return False
+
         if fd.return_type != TypeExpr("void") and not block_returns(fd.body):
             raise SemanticError(f"Function '{fd.name}' may exit without returning a value", fd.pos)

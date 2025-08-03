@@ -126,9 +126,10 @@ class FieldDeclaration:
         return f"field({self.type} {self.name})"
     
 class MethodDeclaration:
-    def __init__(self, name: str, params, return_type,
+    def __init__(self, name: str, type_params, params, return_type,
                  body: list, is_static: bool, pos=None):
         self.name = name
+        self.type_params = type_params
         self.params = params          # [(name, type), …]
         self.return_type = return_type
         self.body = body              # list of statements
@@ -150,10 +151,12 @@ class StaticFieldDeclaration:
         return f"static {self.type} {self.name} = {self.expr}"
 
 class StructureDeclaration:
-    def __init__(self, name: str, fields: list[FieldDeclaration],
+    def __init__(self, name: str, 
+                 type_params, fields: list[FieldDeclaration],
                  static_fields: list[StaticFieldDeclaration],
                  methods: list[MethodDeclaration], pos=None):
         self.name = name
+        self.type_params = type_params
         self.fields = fields
         self.static_fields = static_fields
         self.methods = methods
@@ -175,11 +178,11 @@ class MemberAccess:
     def __init__(self, obj, field, pos=None):
         self.obj   = obj      # an expression
         self.field = field    # string
-        self.struct_name = ""
+        self.struct = None
         self.pos   = pos
 
     def __str__(self):
-        return f"({self.struct_name} {self.obj}).{self.field}"
+        return f"({self.struct} {self.obj}).{self.field}"
 
 class MemberAssignment:
     def __init__(self, obj, field, expr, pos=None):
@@ -192,16 +195,17 @@ class MemberAssignment:
         return f"{self.obj}.{self.field} <- {self.expr}"
 
 class MethodCall:
-    def __init__(self, receiver, method: str, args: list, pos=None):
+    def __init__(self, receiver, type_args, method: str, args: list, pos=None):
         self.receiver = receiver  # an expression
+        self.type_args = type_args
         self.method   = method    # method name
-        self.struct_name = ""
+        self.struct = None
         self.args     = args      # list of Expr
         self.pos      = pos
 
     def __str__(self):
         a = ", ".join(str(x) for x in self.args)
-        return f"({self.struct_name} {self.receiver}).{self.method}({a})"
+        return f"({self.struct} {self.receiver}).{self.method}({a})"
 
 
 class BreakStmt:

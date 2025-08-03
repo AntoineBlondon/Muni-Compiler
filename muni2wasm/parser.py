@@ -114,9 +114,32 @@ class Parser:
             return self.parse_assignment(tok, semi)
 
         # local declaration: int|boolean|void
-        if kind in ["INT_KW", "BOOL_KW", "VOID_KW"] or (kind == "IDENT"
-            and self.tokens[self.pos+1].kind == "IDENT"
-            and self.tokens[self.pos+2].kind == "ASSIGN"):
+        # local declaration: built-in or T or T<…>
+        is_local_decl = False
+        if kind in ("INT_KW","BOOL_KW","VOID_KW"):
+            is_local_decl = True
+        elif kind == "IDENT":
+            # simple: IDENT name = …
+            if (self.tokens[self.pos+1].kind == "IDENT" and
+                self.tokens[self.pos+2].kind == "ASSIGN"):
+                is_local_decl = True
+            # generic: IDENT<…> name = …
+            elif self.tokens[self.pos+1].kind == "LT":
+                # skip to matching '>'
+                j = self.pos + 2
+                depth = 1
+                while j < len(self.tokens) and depth > 0:
+                    if self.tokens[j].kind == "LT":
+                        depth += 1
+                    elif self.tokens[j].kind == "GT":
+                        depth -= 1
+                    j += 1
+                # now j points just past '>'
+                if (j < len(self.tokens) and
+                    self.tokens[j].kind == "IDENT" and
+                    self.tokens[j+1].kind == "ASSIGN"):
+                    is_local_decl = True
+        if is_local_decl:
             first_tok = self.peek_token()
             declaration_type = self.parse_type_expr()
             name_tok = self.expect("IDENT")
@@ -192,143 +215,166 @@ class Parser:
         kw       = self.expect("STRUCTURE_KW")
         name_tok = self.expect("IDENT")
         struct_name = name_tok.text
+
+        struct_type_params: list[str] = []
+        if self.peek() == "LT":
+            # consume '<'
+            self.next()
+            while True:
+                tp = self.expect("IDENT").text
+                struct_type_params.append(tp)
+                if self.peek() == "COMMA":
+                    self.next()
+                    continue
+                break
+            self.expect("GT")
         self.expect("LBRACE")
 
         fields, static_fields, methods = [], [], []
         while self.peek() != "RBRACE":
 
-            # --- static field? ---
-            if self.peek()=="STATIC_KW" and self.tokens[self.pos+3].kind=="ASSIGN":
-                st_tok = self.next()                         # STATIC_KW
-                # parse type (INT_KW|BOOL_KW|IDENT)
-                if self.peek() in ("INT_KW","BOOL_KW"):
-                    ty_tok = self.next()
-                    ty = self.ast.TypeExpr("int") if ty_tok.kind=="INT_KW" else self.ast.TypeExpr("boolean")
-                elif self.peek()=="IDENT":
-                    ty_tok = self.next()
-                    ty = self.ast.TypeExpr(ty_tok.text)
-                else:
-                    t = self.peek_token()
-                    raise SyntaxError(f"{t.line}:{t.col}: Unexpected static‐field type {self.peek()}")
+            # --- static field declarations ---
+            if self.peek() == "STATIC_KW" and self.tokens[self.pos+3].kind == "ASSIGN":
+                st_tok = self.next()  # STATIC_KW
+                # parse the full type (could be generic)
+                ty = self.parse_type_expr()
                 name_tok = self.expect("IDENT")
                 self.expect("ASSIGN")
                 init = self.parse_expr()
                 self.expect("SEMI")
                 static_fields.append(
-                    self.ast.StaticFieldDeclaration(name_tok.text, ty, init, # type: ignore
-                                                    pos=(ty_tok.line,ty_tok.col))
+                    self.ast.StaticFieldDeclaration(
+                        name_tok.text, ty, init,
+                        pos=(ty.pos or (st_tok.line, st_tok.col))
+                    )
                 )
                 continue
-            # --- constructor?  IDENT == struct_name + LPAREN ---
-            if (self.peek()=="IDENT"
-                and self.tokens[self.pos].text == struct_name
-                and self.tokens[self.pos+1].kind == "LPAREN"):
-                ctor_tok = self.next()   # consume struct name
-                # parse params
-                self.expect("LPAREN")
-                params = []
-                if self.peek() != "RPAREN":
-                    while True:
-                        pk = self.peek()
-                        if pk == "INT_KW":
-                            self.next(); p_ty=self.ast.TypeExpr("int")
-                        elif pk == "BOOL_KW":
-                            self.next(); p_ty=self.ast.TypeExpr("boolean")
-                        elif pk == "IDENT":
-                            p_tok = self.next(); p_ty = self.ast.TypeExpr(p_tok.text)
-                        else:
-                            t = self.peek_token()
-                            raise SyntaxError(f"{t.line}:{t.col}: Unexpected parameter type {pk}")
-                        p_name = self.expect("IDENT").text
-                        params.append((p_name, p_ty))
-                        if self.peek()=="COMMA":
-                            self.next(); continue
-                        break
-                self.expect("RPAREN")
 
-                # body
-                self.expect("LBRACE")
-                body = []
-                while self.peek() != "RBRACE":
-                    body.append(self.parse_stmt())
-                self.expect("RBRACE")
+            # --- constructor: exactly IDENT==struct_name(...) plus optional <…> ---
+            if self.peek() == "IDENT" and self.tokens[self.pos].text == struct_name:
+                # look ahead past any <…> type‐args
+                j = self.pos + 1
+                if j < len(self.tokens) and self.tokens[j].kind == "LT":
+                    depth = 1
+                    j += 1
+                    while j < len(self.tokens) and depth > 0:
+                        if self.tokens[j].kind == "LT":
+                            depth += 1
+                        elif self.tokens[j].kind == "GT":
+                            depth -= 1
+                        j += 1
+                # only if the very next token after <…> is '(' do we have a ctor
+                if j < len(self.tokens) and self.tokens[j].kind == "LPAREN":
+                    ctor_tok = self.next()   # consume struct_name
+                    # optional ctor<…> TPs
+                    ctor_type_params: list[str] = []
+                    if self.peek() == "LT": 
+                        self.next()
+                        while True:
+                            tp = self.expect("IDENT").text
+                            ctor_type_params.append(tp)
+                            if self.peek() == "COMMA":
+                                self.next(); continue
+                            break
+                        self.expect("GT")
 
-                # record as _static_ constructor returning its own struct
-                methods.append(self.ast.MethodDeclaration(
-                    struct_name,        # name == struct
-                    params,
-                    struct_name,        # return type == struct
-                    body,
-                    True,               # is_static
-                    pos=(ctor_tok.line, ctor_tok.col)
-                ))
-                continue
+                    # now the parameter list
+                    self.expect("LPAREN")
+                    ctor_params = []
+                    if self.peek() != "RPAREN":
+                        while True:
+                            p_ty   = self.parse_type_expr()
+                            p_name = self.expect("IDENT").text
+                            ctor_params.append((p_name, p_ty))
+                            if self.peek() == "COMMA":
+                                self.next(); continue
+                            break
+                    self.expect("RPAREN")
 
-            # --- ordinary field? type can be int, boolean or any struct IDENT ---
-            if (self.peek() in ("INT_KW","BOOL_KW","IDENT")
-                and self.tokens[self.pos+2].kind == "SEMI"):
-                tok_type = self.next()
-                if tok_type.kind == "INT_KW":
-                    field_type = self.ast.TypeExpr("int")
-                elif tok_type.kind == "BOOL_KW":
-                    field_type = self.ast.TypeExpr("boolean")
-                else:
-                    # user‐defined struct
-                    field_type = self.ast.TypeExpr(tok_type.text)
-                idt = self.expect("IDENT")
-                self.expect("SEMI")
-                fields.append(self.ast.FieldDeclaration(
-                    idt.text, field_type,
-                    pos=(tok_type.line, tok_type.col)
-                ))
-                continue
+                    # body
+                    self.expect("LBRACE")
+                    body = []
+                    while self.peek() != "RBRACE":
+                        body.append(self.parse_stmt())
+                    self.expect("RBRACE")
 
+                    ctor_ret = self.ast.TypeExpr(
+                        struct_name,
+                        [ self.ast.TypeExpr(tp) for tp in struct_type_params ]
+                    )
+                    # record it as a static method whose name == struct_name
+                    methods.append(self.ast.MethodDeclaration(
+                        struct_name,
+                        ctor_type_params,
+                        ctor_params,
+                        ctor_ret,
+                        body,
+                        True,
+                        pos=(ctor_tok.line, ctor_tok.col)
+                    ))
+                    continue
 
-            # --- method (static or instance) ---
+            # --- normal instance field:  <type> <name>; ---
+            if self.peek() in ("INT_KW","BOOL_KW","IDENT"):
+                # look‐ahead past any generic args to see if we really have
+                #   <type> <name> ;
+                j = self.pos + 1
+                # if there's a '<', skip to its matching '>'
+                if j < len(self.tokens) and self.tokens[j].kind == "LT":
+                    depth = 1
+                    j += 1
+                    while j < len(self.tokens) and depth > 0:
+                        if self.tokens[j].kind == "LT":
+                            depth += 1
+                        elif self.tokens[j].kind == "GT":
+                            depth -= 1
+                        j += 1
+                # now we should be at the field‐name IDENT, followed by SEMI
+                if j + 1 < len(self.tokens) and \
+                self.tokens[j].kind == "IDENT" and \
+                self.tokens[j+1].kind == "SEMI":
+                    # yup, it's a field
+                    ty = self.parse_type_expr()
+                    name_tok = self.expect("IDENT")
+                    self.expect("SEMI")
+                    fields.append(self.ast.FieldDeclaration(
+                        name_tok.text, ty, pos=(name_tok.line, name_tok.col)
+                    ))
+                    continue
+
+            # --- methods (instance or static) ---
             is_static = False
             if self.peek() == "STATIC_KW":
                 self.next()
                 is_static = True
 
-            # parse return type: void|int|boolean or a user‐defined struct name
-            tok = self.peek()
-            if tok in ("VOID_KW","INT_KW","BOOL_KW"):
-                rt_tok = self.next()
-                rt = self.ast.TypeExpr({"VOID_KW":"void","INT_KW":"int","BOOL_KW":"boolean"}[rt_tok.kind])
-            elif tok == "IDENT":
-                rt_tok = self.next()
-                rt = self.ast.TypeExpr(rt_tok.text)
-            else:
-                t = self.peek_token()
-                raise SyntaxError(f"{t.line}:{t.col}: Expected return type, got {tok}")
-
+            # return type
+            rt = self.parse_type_expr()
             # method name
-            idt = self.expect("IDENT")
+            name_tok = self.expect("IDENT")
 
-            # params
+            # optional method<…> TPs
+            method_type_params: list[str] = []
+            if self.peek() == "LT":
+                self.next()
+                while True:
+                    tp = self.expect("IDENT").text
+                    method_type_params.append(tp)
+                    if self.peek() == "COMMA":
+                        self.next(); continue
+                    break
+                self.expect("GT")
+
+            # param list
             self.expect("LPAREN")
-            params = []
+            m_params = []
             if self.peek() != "RPAREN":
                 while True:
-                    kind = self.peek()
-                    # built-in types
-                    if kind in ("INT_KW","BOOL_KW","VOID_KW"):
-                        p_tok = self.next()
-                        ptype = self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[p_tok.kind])
-                    # struct type
-                    elif kind == "IDENT":
-                        p_tok = self.next()
-                        ptype = self.ast.TypeExpr(p_tok.text)
-                    else:
-                        t = self.peek_token()
-                        raise SyntaxError(f"{t.line}:{t.col}: Unexpected parameter type {kind}")
-
-                    pn = self.expect("IDENT")
-                    params.append((pn.text, ptype))
-
+                    p_ty   = self.parse_type_expr()
+                    p_name = self.expect("IDENT").text
+                    m_params.append((p_name, p_ty))
                     if self.peek() == "COMMA":
-                        self.next()
-                        continue
+                        self.next(); continue
                     break
             self.expect("RPAREN")
 
@@ -340,16 +386,27 @@ class Parser:
             self.expect("RBRACE")
 
             methods.append(self.ast.MethodDeclaration(
-                idt.text, params, rt, body, is_static, # type: ignore
-                pos=(rt_tok.line, rt_tok.col)
+                name_tok.text,
+                method_type_params,
+                m_params,
+                rt,
+                body,
+                is_static,
+                pos=(name_tok.line, name_tok.col)
             ))
+            continue
 
-
+        # close the struct
         self.expect("RBRACE")
         return self.ast.StructureDeclaration(
-            struct_name, fields, static_fields, methods,
+            struct_name,
+            struct_type_params,
+            fields,
+            static_fields,
+            methods,
             pos=(kw.line, kw.col)
         )
+
 
     def parse_function_declaration(self):
         # return type: VOID_KW|INT_KW|BOOL_KW|IDENT
@@ -677,6 +734,19 @@ class Parser:
             while self.peek() == "DOT":
                 self.next()  # consume '.'
                 name = self.expect("IDENT").text
+                type_args = []
+                if self.peek() == "LT":
+                    self.next()
+                    while True:
+                        try: 
+                            type_args.append(self.parse_type_expr())
+                            if self.peek()=="COMMA":
+                                self.next(); continue
+                            break
+                        except:
+                            is_function = False
+                            break
+                    if is_function: self.expect("GT")
 
                 # 1a) method call?
                 if self.peek() == "LPAREN":
@@ -689,7 +759,7 @@ class Parser:
                                 self.next(); continue
                             break
                     self.expect("RPAREN")
-                    node = self.ast.MethodCall(node, name, args, pos=(line,col))
+                    node = self.ast.MethodCall(node, type_args, name, args, pos=(line,col))
                 else:
                     # simple field access
                     node = self.ast.MemberAccess(node, name, pos=(line,col))

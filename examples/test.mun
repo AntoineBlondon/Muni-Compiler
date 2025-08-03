@@ -1,8 +1,43 @@
 import env.print(int) -> void;
 
+structure box
+{
+    int value;
 
-void main() {
-    int g = 0;
-    for (; g < 0; g = g + 1) { }
-    print(g);
+    box(int value)
+    {
+        this.value = value;
+    }
+}
+
+
+structure list<T>
+{
+    T value;
+    list<T> next;
+
+    list<T>(T value)
+    {
+        this.value = value;
+        this.next = null;
+    }
+
+    void append(list<T> other)
+    {
+        if (this.next == null) {
+            this.next = other;
+        } else {
+            this.next.append(other);
+        }
+    }
+}
+
+void main()
+{
+    list<int> a = list<int>(1);
+
+    list<box> b = list<box>(box(2));
+
+    print(a.value);
+    print(b.value.value);
 }
