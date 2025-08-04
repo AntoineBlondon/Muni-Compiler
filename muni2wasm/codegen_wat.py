@@ -581,11 +581,11 @@ class CodeGen:
             head_call = FunctionCall("list", [elt_ty], [first], pos=expr.pos)
 
             # 3) debug-print to be sure:
-            print(f"[ListLiteral] building list<{elt_ty.name}> ctor → "
-                f"head_call.type_args = {[ta.name for ta in head_call.type_args]}")
+            #print(f"[ListLiteral] building list<{elt_ty.name}> ctor → "
+            #   f"head_call.type_args = {[ta.name for ta in head_call.type_args]}")
 
-            print("  ↳ created head_call:", head_call, "with type_args =", [*map(str, head_call.type_args)])
-            print(f"[DEBUG] Generating ListLiteral with {[*map(str, head_call.type_args)]}")
+            #print("  ↳ created head_call:", head_call, "with type_args =", [*map(str, head_call.type_args)])
+            #print(f"[DEBUG] Generating ListLiteral with {[*map(str, head_call.type_args)]}")
             self.gen_expr(head_call)         # alloc + constructor
             self.emit("local.set $__lit")    # store head in $__lit
 
@@ -682,9 +682,9 @@ class CodeGen:
 
         # --- struct‐constructor (monomorphic or generic) ---
         elif isinstance(expr, FunctionCall) and expr.name in self.struct_layouts:
-            print(f"[CtorCall] in {self.current_struct}<{self.current_targs}>"
-                          f"::{self.current_method}() got expr.type_args ="
-              f" {[ta.name for ta in expr.type_args]}")            # remap any type-var arguments through the local map
+            # print(f"[CtorCall] in {self.current_struct}<{self.current_targs}>"
+            #               f"::{self.current_method}() got expr.type_args ="
+            #   f" {[ta.name for ta in expr.type_args]}")            # remap any type-var arguments through the local map
             concrete_targs = [
                 (self._tv_map[ta.name] if ta.name in self._tv_map else ta)
                 for ta in expr.type_args
