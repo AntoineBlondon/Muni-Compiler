@@ -1,26 +1,26 @@
 import <list.mun>;
 import env.print(int) -> void;
 
-structure box
+structure box<T>
 {
-    int value;
+    T value;
 
-    box(int value)
+    box(T value)
     {
         this.value = value;
     }
 }
 
 
+
 void main()
 {
-    list<int> a = [1, 2, 3];
-
-    a.set(2, 10);
-    print(a.get(2));
-
-    print(a.length());
+    list<int> a = [2];
+    list<int> b = null;
 
 
+    print(a.get(0));
+
+    print(b.length());
 
 }

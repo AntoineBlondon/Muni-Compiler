@@ -32,10 +32,21 @@ structure list<T>
 
     void append(list<T> other)
     {
-        if (this.next == null) {
-            this.next = other.copy();
+        if (other == null) {
+            return;
+        }
+        for (list<T> cur = other; cur != null; cur = cur.next) {
+            this.append_element(cur.value);
+        }
+    }
+
+    void append_element(T value)
+    {
+        if (this == null) {
+            this.value = value;
+            this.next = null;
         } else {
-            this.next.append(other);
+            this.next.append_element(value);
         }
     }
 

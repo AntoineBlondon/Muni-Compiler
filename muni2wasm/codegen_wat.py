@@ -565,6 +565,10 @@ class CodeGen:
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
         elif isinstance(expr, ListLiteral):
+            if len(expr.elements) == 0:
+                # empty list literal → consider it a null pointer
+                self.emit("i32.const 0")
+                return
             first = expr.elements[0]
 
             # 1) figure out the TypeExpr for the element

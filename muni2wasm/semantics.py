@@ -266,7 +266,7 @@ def check(program: Program):
             # list‐literal sugar (unchanged—uses bare 'list' ctor)
             if isinstance(expr, ListLiteral):
                 if not expr.elements:
-                    raise SemanticError("Cannot create empty list literal", pos)
+                    return TypeExpr("*")
                 first_ty = infer(expr.elements[0])
                 for e in expr.elements[1:]:
                     t = infer(e)
@@ -539,7 +539,7 @@ def check(program: Program):
                         raise SemanticError(f"Missing initializer for '{stmt.name}'", pos)
                     rt = subst(infer(stmt.expr)) # type: ignore
                     lhs_t = subst(stmt.type)
-                    if not (rt == lhs_t or (rt == TypeExpr("*") and lhs_t in structs)):
+                    if not (rt == lhs_t or (rt == TypeExpr("*") and TypeExpr(stmt.type.name) in structs)):
                         raise SemanticError(f"Cannot assign {rt} to {lhs_t} '{stmt.name}'", pos)
                     symbol_table[stmt.name] = lhs_t
                 continue
@@ -548,7 +548,7 @@ def check(program: Program):
                 if stmt.name not in symbol_table:
                     raise SemanticError(f"Assignment to undefined '{stmt.name}'", pos)
                 lt = symbol_table[stmt.name]
-                rt = infer(stmt.expr)
+                rt = subst(infer(stmt.expr))
                 if not (rt == lt or (rt == TypeExpr("*") and lt in structs)):
                     raise SemanticError(f"Cannot assign {rt} to {lt} '{stmt.name}'", pos)
                 continue
