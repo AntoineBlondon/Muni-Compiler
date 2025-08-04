@@ -22,7 +22,7 @@ structure list<T>
     list<T> copy()
     {
         list<T> copy = list<T>(this.value);
-        for (list<T> cur = this.next; cur.next != null; cur = cur.next) {
+        for (list<T> cur = this.next; cur != null; cur = cur.next) {
             copy.append(list<T>(cur.value));
         }
         return copy;
@@ -32,7 +32,7 @@ structure list<T>
     void append(list<T> other)
     {
         if (this.next == null) {
-            this.next = other;
+            this.next = other.copy();
         } else {
             this.next.append(other);
         }
