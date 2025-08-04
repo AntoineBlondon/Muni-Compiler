@@ -48,21 +48,18 @@ class CodeGen:
 
     def gen(self) -> str:
         self.out = ["(module"]
-        
-            
-
+        # 1) host imports
         for imp in self.program.decls:
             if isinstance(imp, ImportDeclaration) and imp.source is None:
-                # host import (ignore any type-parameters)
                 param_decl = " ".join("i32" for _ in imp.params)
-                # imp.return_type might be a string or a TypeExpr
                 rt = imp.return_type.name if hasattr(imp.return_type, "name") else imp.return_type # type: ignore
                 result_decl = "" if rt == "void" else "(result i32)"
                 self.out.append(
                     f'  (import "{imp.module}" "{imp.name}" '
                     f'(func ${imp.name} (param {param_decl}) {result_decl}))'
                 )
-        
+
+        # 2) memory + malloc
         self.out.extend([
             "  (memory $mem 1)",
             "  (global $heap (mut i32) (i32.const 4))",
@@ -74,157 +71,202 @@ class CodeGen:
             "    global.set $heap",
             "  )",
             '  (export "memory" (memory $mem))',
-            '  (export "malloc" (func $malloc))',
+            '  (export "malloc" (func $malloc))',   
         ])
 
-        for d in self.program.decls:
-            if isinstance(d, StructureDeclaration):
-                self.struct_insts[(d.name, ())] = True
-
-        # 1) collect struct layouts
+        # 4) collect all struct layouts
         for d in self.program.decls:
             if isinstance(d, StructureDeclaration):
                 self._collect_struct(d)
 
-
-        # --- emit all static‐struct fields as immutable globals ---
+        # 5) emit static‐struct fields
         for d in self.program.decls:
             if isinstance(d, StructureDeclaration):
                 for sf in d.static_fields:
-                    # sf.expr is either Number or BooleanLiteral
-                    if isinstance(sf.expr, Number):
-                        val = sf.expr.value
-                    else:
-                        # boolean: true→1, false→0
-                        val = 1 if sf.expr.value else 0
+                    val = sf.expr.value if isinstance(sf.expr, Number) else (1 if sf.expr.value else 0)
                     self.out.append(
                         f'  (global ${d.name}_{sf.name} i32 (i32.const {val}))'
                     )
-
-       
-
-        # 2) emit struct‐template constructors (they are static, no mangle)
         for sd in self.program.decls:
-            if isinstance(sd, StructureDeclaration):
-                ctor = next((m for m in sd.methods if m.is_static and m.name == sd.name), None)
-                if ctor:
-                     self.gen_method(sd.name, ctor)  # the raw “template” ctor
+            if not isinstance(sd, StructureDeclaration):
+                continue
 
-        # 2b) now monomorphize every specialization we actually used:
-        
+            # 1) the “template” ctor: list<T>(…) → $list_list
+            ctor = next((m for m in sd.methods if m.is_static and m.name == sd.name), None)
+            if ctor:
+                self.gen_method(sd.name, ctor, type_args=[])
 
-        # 3) emit free **monomorphic** fns now
+            # 2) any other static helpers (append, set, #print…)
+            for m in sd.methods:
+                if m.is_static and m.name != sd.name:
+                    self.gen_method(sd.name, m, type_args=[])
+
+        # 6) emit all free, non-generic functions
         for fd in self.program.decls:
             if isinstance(fd, FunctionDeclaration) and not fd.type_params:
                 self.gen_func(fd)
 
-        # 4) emit **monomorphized struct instance‐methods**
-        for (struct_name, targs) in self.struct_insts:
-            # find the decl
+        # 7) monomorphize every used struct<…>
+        #    (including the empty-targs case)
+        # — but first, drop any instantiation that is _just_ the struct’s own type‐vars.
+        #    i.e. ('list',('T',)) → skip
+        #
+        # build a map from struct → its declared type‐params
+        template_tparams = {
+            sd.name: sd.type_params
+            for sd in self.program.decls
+            if isinstance(sd, StructureDeclaration)
+        }
+
+        filtered = {}
+        for (sname, targs), used in self.struct_insts.items():
+            # if these targs exactly match the struct’s own T‐vars, skip
+            if template_tparams.get(sname, []) == list(targs):
+                continue
+            filtered[(sname, targs)] = True
+        self.struct_insts = filtered
+
+    
+        # now emit each concrete instantiation:
+        for struct_name, targs in list(self.struct_insts):
+            # find the StructureDeclaration
             sd = next(d for d in self.program.decls
                     if isinstance(d, StructureDeclaration) and d.name == struct_name)
+            # build TypeExpr list
+            tas = [TypeExpr(n) for n in targs]
 
-            # for each *instance* method:
-            for m in sd.methods:
-                if m.is_static and m.name==struct_name:
-                    continue
-                # give gen_method the type_args
-                self.gen_method(struct_name, m,
-                                type_args=[TypeExpr(n) for n in targs])
-        
-        for (fn, targs) in self.fn_insts:
-            fd = next(f for f in self.program.decls
-                if isinstance(f,FunctionDeclaration) and f.name==fn)
-            self.gen_func(fd, type_args=[TypeExpr(n) for n in targs])
-        
-        #     for ('list', ('int',)), emit a ctor called $list_list__int
-        for (struct_name, targs) in list(self.struct_insts):
-            if not targs:
-                continue
-            sd = next(d for d in self.program.decls
-                      if isinstance(d, StructureDeclaration) and d.name == struct_name)
+            # 7a) static constructor for this instantiation
             ctor = next((m for m in sd.methods if m.is_static and m.name == struct_name), None)
             if ctor:
-                # turn ["int"] → [ TypeExpr("int") ]
-                tas = [TypeExpr(n) for n in targs]
                 self.gen_method(struct_name, ctor, type_args=tas)
-        
-        for sd in self.program.decls:
-            if isinstance(sd, StructureDeclaration):
-                for m in sd.methods:
-                    if m.is_static and m.name != sd.name:
-                        self.gen_method(sd.name, m, type_args=[])
-        # export main if present
+
+            # 7b) instance methods for this instantiation
+            for m in sd.methods:
+                if not m.is_static:
+                    self.gen_method(struct_name, m, type_args=tas)
+
+            # 7c) any other static helpers (e.g. static methods not named ctor)
+            for m in sd.methods:
+                if m.is_static and m.name != struct_name:
+                    self.gen_method(struct_name, m, type_args=tas)
+
+        # 8) monomorphize any generic free functions
+        for fn, targs in list(self.fn_insts):
+            fd = next(f for f in self.program.decls
+                    if isinstance(f, FunctionDeclaration) and f.name == fn)
+            self.gen_func(fd, type_args=[TypeExpr(n) for n in targs])
+
+        # 9) export main if present
         if any(isinstance(d, FunctionDeclaration) and d.name == "main"
-               for d in self.program.decls):
+            for d in self.program.decls):
             self.out.append('  (export "main" (func $main))')
 
+        # 10) finish module
         self.out.append(")")
         return "\n".join(self.out)
+
 
     def _collect_struct(self, sd: StructureDeclaration):
         size = len(sd.fields) * 4
         offsets = {f.name: idx * 4 for idx, f in enumerate(sd.fields)}
         self.struct_layouts[sd.name] = {"size": size, "offsets": offsets}
 
-    def gen_method(self, struct_name: str, m: MethodDeclaration, type_args = None):
-        self.locals = []
-        self.code   = []
+    def gen_method(self, struct_name: str, m: MethodDeclaration, type_args=None):
+        #print(f"[DEBUG] Generating method {m.name} for struct {struct_name} with type args {[*map(str, type_args)]}") # type: ignore
+        self.current_struct = struct_name
+        self.current_targs  = [ta.name for ta in (type_args or [])]
+        self.current_method = m.name
+        # reset per-method state
+        self.code = []
 
         type_args = type_args or []
-        raw_name = f"{struct_name}_{m.name}"
-        fn_name  = self._mangle(raw_name, type_args)
+        # Look up the original template’s type-param names:
+        sd = next(d for d in self.program.decls
+                  if isinstance(d, StructureDeclaration) and d.name == struct_name)
+        # Build a map Tvar → actual (e.g. "T" → TypeExpr("int"))
+        self._tv_map = { tv: ta for tv, ta in zip(sd.type_params, type_args) }
 
-        # 1) figure out if this is (a) an instance-method or (b) our constructor
+        # mangle the name
+        type_args = type_args or []
+        raw_name = f"{struct_name}_{m.name}"
+        fn_name = self._mangle(raw_name, type_args)
+
+        # determine instance vs constructor
         is_instance    = not m.is_static
         is_constructor = m.is_static and m.name == struct_name
 
-        # 2) build the parameter list
+        # build parameter list
         params = []
         if is_instance or is_constructor:
             params.append("(param $this i32)")
         for pname, _ in m.params:
             params.append(f"(param ${pname} i32)")
 
-        # 3) return signature
+        # return signature
         result_decl = "" if m.return_type == TypeExpr("void") else "(result i32)"
 
-        # 4) gather locals (excluding parameters)
-        for s in m.body:
-            if isinstance(s, VariableDeclaration) and s.type != TypeExpr("void"):
-                self.locals.append(s.name)
-        # a scratch local for things like `do { … }`
-        self.locals.append("__struct_ptr")
-        self.locals.append("__lit") 
+        # recursively collect locals (including those in for-init)
+        self.locals = ["__struct_ptr", "__lit"]
+        def scan(stmt):
+            from .ast import VariableDeclaration, IfStmt, ForStmt, WhileStmt, DoStmt, UntilStmt
+            # local variable
+            if isinstance(stmt, VariableDeclaration) and stmt.type != TypeExpr("void"):
+                if stmt.name not in self.locals:
+                    self.locals.append(stmt.name)
+            # if-statement
+            elif isinstance(stmt, IfStmt):
+                for s in stmt.then_stmts + stmt.else_stmts:
+                    scan(s)
+            # for-statement (catches init & post)
+            elif isinstance(stmt, ForStmt):
+                if stmt.init: scan(stmt.init)
+                if stmt.post: scan(stmt.post)
+                for s in stmt.body + stmt.else_body:
+                    scan(s)
+            # while/until
+            elif isinstance(stmt, (WhileStmt, UntilStmt)):
+                for s in stmt.body + stmt.else_body:
+                    scan(s)
+            # do-stmt
+            elif isinstance(stmt, DoStmt):
+                if stmt.count is not None and isinstance(stmt.count, VariableDeclaration):
+                    scan(stmt.count)
+                for s in stmt.body + stmt.else_body:
+                    scan(s)
+            # nested declarations in assignments or calls get picked up in their Expression handling
 
+        # scan the entire body
+        for st in m.body:
+            scan(st)
+
+        # emit the function header
         locals_decl = " ".join(f"(local ${n} i32)" for n in self.locals)
-
-        # 5) emit the function header
         header = f"  (func ${fn_name} {' '.join(params)} {result_decl} {locals_decl}"
         self.out.append(header)
 
-        # 6) emit the body
+        # emit the body
         for stmt in m.body:
             self.gen_stmt(stmt)
 
-        # 7) emit the tail
+        # emit the tail
         if is_constructor:
-            # constructors implicitly return `this`
+            # constructors return `this`
             self.emit("local.get $this")
             self.emit("return")
         elif m.return_type == TypeExpr("void"):
             self.emit("return")
         else:
-            # non-void methods must return explicitly on every path, unreachable otherwise
+            # non-void must have returned on every path
             self.emit("unreachable")
 
-        # 8) splice in the generated instructions and close
+        # splice in code and close
         self.out.extend(self.code)
         self.out.append("  )")
 
 
+
     def gen_func(self, func: FunctionDeclaration, type_args=None):
-        
+        #print(f"[DEBUG] Generating function {func.name} with type args {type_args}")
         self.locals = ["__struct_ptr", "__lit"]
         self.code = []
         raw = func.name
@@ -286,9 +328,23 @@ class CodeGen:
 
         # MemberAssignment
         if isinstance(stmt, MemberAssignment):
-            self.gen_expr(stmt.obj.obj)
+            # First, we need to get the address of the field
+            # Generate the object expression to get the base address
+            self.gen_expr(stmt.obj.obj)  # This is the object part of the MemberAccess
+            
+            # Generate the RHS value
             self.gen_expr(stmt.expr)
-            off = self.struct_layouts[stmt.obj.struct.name]["offsets"][stmt.field]
+            
+            # Get struct info from the MemberAccess node
+            if not hasattr(stmt.obj, 'struct') or stmt.obj.struct is None:
+                raise RuntimeError(f"MemberAssignment missing struct annotation on {stmt.obj}")
+            
+            struct_name = stmt.obj.struct.name
+            if struct_name not in self.struct_layouts:
+                raise RuntimeError(f"Unknown struct layout: {struct_name}")
+                
+            # Emit the store into that field
+            off = self.struct_layouts[struct_name]["offsets"][stmt.field]
             self.emit(f"i32.store offset={off}")
             return
 
@@ -509,21 +565,42 @@ class CodeGen:
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
         elif isinstance(expr, ListLiteral):
-            # --- head node ---
-            head_call = FunctionCall("list", [], [expr.elements[0]], pos=expr.pos)
+            first = expr.elements[0]
+
+            # 1) figure out the TypeExpr for the element
+            #    (either from the local TV map, or from a literal’s type)
+            if isinstance(first, Number):
+                elt_ty = TypeExpr("int")
+            else:
+                # for generic methods, _tv_map["T"] → TypeExpr("int") or TypeExpr("T")
+                elt_ty = self._tv_map.get(first.name, None)  
+                if elt_ty is None:
+                    raise RuntimeError("can't infer list element type for " + repr(first))
+
+            # 2) build the constructor call with that type
+            head_call = FunctionCall("list", [elt_ty], [first], pos=expr.pos)
+
+            # 3) debug-print to be sure:
+            print(f"[ListLiteral] building list<{elt_ty.name}> ctor → "
+                f"head_call.type_args = {[ta.name for ta in head_call.type_args]}")
+
+            print("  ↳ created head_call:", head_call, "with type_args =", [*map(str, head_call.type_args)])
+            print(f"[DEBUG] Generating ListLiteral with {[*map(str, head_call.type_args)]}")
             self.gen_expr(head_call)         # alloc + constructor
             self.emit("local.set $__lit")    # store head in $__lit
 
             # --- link remaining elements ---
             for elt in expr.elements[1:]:
-                node_call = FunctionCall("list", [], [elt], pos=expr.pos)
+                node_call = FunctionCall("list", [elt_ty], [elt], pos=expr.pos)
                 self.gen_expr(node_call)     # alloc + constructor
                 self.emit("local.set $__struct_ptr")
 
                 # __lit.append(__struct_ptr)
                 self.emit("local.get $__lit")
                 self.emit("local.get $__struct_ptr")
-                self.emit("call $list_append")
+                # mangle it with the same elt_ty
+                append_fn = self._mangle("list_append", [elt_ty])
+                self.emit(f"call ${append_fn}")
 
             # --- result of the literal is the head ptr ---
             self.emit("local.get $__lit")
@@ -559,14 +636,29 @@ class CodeGen:
 
         # instance‐field access
         elif isinstance(expr, MemberAccess):
+            # Generate the base object
             self.gen_expr(expr.obj)
-            struct_name = ""
-            if expr.struct:
-                struct_name = expr.struct.name
+            
+            # Check if this is a static field access
+            if hasattr(expr, 'is_static_field') and expr.is_static_field: # type: ignore
+                # This should be handled by the static field case above
+                raise RuntimeError("Static field access should be handled separately")
+            
+            # Get the struct type - should be set by semantic analysis
+            if not hasattr(expr, 'struct') or expr.struct is None:
+                raise RuntimeError(f"MemberAccess missing struct annotation for field '{expr.field}'")
+            
+            struct_name = expr.struct.name
+            if struct_name not in self.struct_layouts:
+                raise RuntimeError(f"Unknown struct layout: '{struct_name}' for field '{expr.field}'")
+            
+            # Get field offset and emit load
+            if expr.field not in self.struct_layouts[struct_name]["offsets"]:
+                raise RuntimeError(f"Field '{expr.field}' not found in struct '{struct_name}'")
+                
             off = self.struct_layouts[struct_name]["offsets"][expr.field]
             self.emit(f"i32.load offset={off}")
             return
-        
         
         elif isinstance(expr, MethodCall):
             # we rely on the semantic pass having set `expr.struct`
@@ -584,18 +676,31 @@ class CodeGen:
             self.gen_expr(expr.receiver)
             for arg in expr.args:
                 self.gen_expr(arg)
+
             self.emit(f"call ${mangled}")
             return
 
         # --- struct‐constructor (monomorphic or generic) ---
         elif isinstance(expr, FunctionCall) and expr.name in self.struct_layouts:
-            # register for monomorphization
-            key = (expr.name, tuple(ta.name for ta in expr.type_args))
+            print(f"[CtorCall] in {self.current_struct}<{self.current_targs}>"
+                          f"::{self.current_method}() got expr.type_args ="
+              f" {[ta.name for ta in expr.type_args]}")            # remap any type-var arguments through the local map
+            concrete_targs = [
+                (self._tv_map[ta.name] if ta.name in self._tv_map else ta)
+                for ta in expr.type_args
+            ]
+            # register the right instantiation
+            key = (expr.name, tuple(ta.name for ta in concrete_targs))
+            self.struct_insts[key] = True
+
+            # and when you mangle the ctor name, use concrete_targs:
+            raw_ctor = f"{expr.name}_{expr.name}"
+            mangled_ctor = self._mangle(raw_ctor, concrete_targs)
             self.struct_insts[key] = True
 
             # the constructor was emitted as `<struct>_<struct>__<targs>` (or just `<struct>_<struct>` when no targs)
             raw_ctor = f"{expr.name}_{expr.name}"
-            mangled_ctor = self._mangle(raw_ctor, expr.type_args)
+            mangled_ctor = self._mangle(raw_ctor, concrete_targs)
             layout = self.struct_layouts[expr.name]
  
 
@@ -634,4 +739,5 @@ class CodeGen:
         if not type_args:
             return base
         suffix = "_".join(arg.name for arg in type_args)
+        #print(f"[DEBUG] Mangling {base} with type args {[*map(str, type_args)]} to {base}__{suffix}")
         return f"{base}__{suffix}"

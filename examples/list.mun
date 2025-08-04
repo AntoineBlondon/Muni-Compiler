@@ -1,19 +1,35 @@
-structure list
+structure list<T>
 {
-    static int MAX_LENGTH = 10;
-    int value;
-    list next;
+    T value;
+    list<T> next;
 
 
-    list(int value)
+    list<T>(T value)
     {
         this.value = value;
         this.next = null;
     }
 
+    int length()
+    {
+        int len = 0;
+        for (list<T> cur = this; cur != null; cur = cur.next) {
+            len = len + 1;
+        }
+        return len;
+    }
+
+    list<T> copy()
+    {
+        list<T> copy = list<T>(this.value);
+        for (list<T> cur = this.next; cur.next != null; cur = cur.next) {
+            copy.append(list<T>(cur.value));
+        }
+        return copy;
+    }
     
 
-    void append(list other)
+    void append(list<T> other)
     {
         if (this.next == null) {
             this.next = other;
@@ -22,12 +38,22 @@ structure list
         }
     }
 
-    void print()
+    T get(int index)
     {
-        list cur = this;
-        while (cur != null) {
-            print(cur.value);
+        list<T> cur = this;
+        for (int i = 0; i < index; i = i + 1) {
             cur = cur.next;
         }
+        return cur.value;
     }
+
+    void set(int index, T value)
+    {
+        list<T> cur = this;
+        for (int i = 0; i < index; i = i + 1) {
+            cur = cur.next;
+        }
+        cur.value = value;
+    }
+
 }

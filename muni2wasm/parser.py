@@ -714,7 +714,11 @@ class Parser:
                     except:
                         is_function = False
                         break
-                if is_function: self.expect("GT")
+                if is_function:
+                    try: 
+                        self.expect("GT")
+                    except:
+                        is_function = False
             if self.peek() == "LPAREN" and is_function:
                 # it's a FuncCall expression
                 self.next()  # consume "("
