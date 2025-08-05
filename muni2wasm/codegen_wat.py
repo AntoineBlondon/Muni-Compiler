@@ -23,7 +23,7 @@ from .ast import (
     MethodDeclaration,
     MethodCall,
     NullLiteral,
-    ListLiteral,
+    ArrayLiteral,
     ImportDeclaration,
     TypeExpr
 )
@@ -74,6 +74,14 @@ class CodeGen:
             '  (export "malloc" (func $malloc))',   
         ])
 
+        self.struct_layouts["array"] = {
+            "size":   8,
+            "offsets": {
+                "length": 0,
+                "buffer": 4
+            }
+        }
+
         # 4) collect all struct layouts
         for d in self.program.decls:
             if isinstance(d, StructureDeclaration):
@@ -118,13 +126,6 @@ class CodeGen:
             if isinstance(sd, StructureDeclaration)
         }
 
-        filtered = {}
-        for (sname, targs), used in self.struct_insts.items():
-            # if these targs exactly match the struct’s own T‐vars, skip
-            if template_tparams.get(sname, []) == list(targs):
-                continue
-            filtered[(sname, targs)] = True
-        self.struct_insts = filtered
 
     
         # now emit each concrete instantiation:
@@ -564,49 +565,38 @@ class CodeGen:
             self.emit(f"i32.const {expr.value}")
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
-        elif isinstance(expr, ListLiteral):
-            if len(expr.elements) == 0:
-                # empty list literal → consider it a null pointer
+        elif isinstance(expr, ArrayLiteral):
+            # --- reuse the runtime constructor for us ---
+            if not expr.elements:
+                # empty array → null pointer
                 self.emit("i32.const 0")
                 return
-            first = expr.elements[0]
 
-            # 1) figure out the TypeExpr for the element
-            #    (either from the local TV map, or from a literal’s type)
-            if isinstance(first, Number):
-                elt_ty = TypeExpr("int")
-            else:
-                # for generic methods, _tv_map["T"] → TypeExpr("int") or TypeExpr("T")
-                elt_ty = self._tv_map.get(first.name, None)  
-                if elt_ty is None:
-                    raise RuntimeError("can't infer list element type for " + repr(first))
+            # assume int‐elements for now; extend size_of if you need other T
+            elt_ty = TypeExpr("T")
+            n = len(expr.elements)
 
-            # 2) build the constructor call with that type
-            head_call = FunctionCall("list", [elt_ty], [first], pos=expr.pos)
+            # 1) call array<T>(n)
+            ctor_call = FunctionCall("array", [elt_ty], [Number(str(n))], pos=expr.pos)
+            self.gen_expr(ctor_call)
+            # stash the returned ptr
+            self.emit("local.set $__lit")
 
-            # 3) debug-print to be sure:
-            #print(f"[ListLiteral] building list<{elt_ty.name}> ctor → "
-            #   f"head_call.type_args = {[ta.name for ta in head_call.type_args]}")
+            # 2) populate each slot: x.set(i, value)
+            for i, elt in enumerate(expr.elements):
 
-            #print("  ↳ created head_call:", head_call, "with type_args =", [*map(str, head_call.type_args)])
-            #print(f"[DEBUG] Generating ListLiteral with {[*map(str, head_call.type_args)]}")
-            self.gen_expr(head_call)         # alloc + constructor
-            self.emit("local.set $__lit")    # store head in $__lit
+                # build an AST node for: $__lit.set(i, elt)
+                set_call = MethodCall(
+                   Ident("__lit", pos=expr.pos),   # receiver
+                   [],                              # no type‐args
+                   "set",                           # method name
+                   [ Number(str(i), pos=expr.pos), elt ],
+                   struct=TypeExpr("array", [elt_ty]),
+                   pos=expr.pos
+                )
+                self.gen_expr(set_call)          # this will inline your intrinsic .set
 
-            # --- link remaining elements ---
-            for elt in expr.elements[1:]:
-                node_call = FunctionCall("list", [elt_ty], [elt], pos=expr.pos)
-                self.gen_expr(node_call)     # alloc + constructor
-                self.emit("local.set $__struct_ptr")
-
-                # __lit.append(__struct_ptr)
-                self.emit("local.get $__lit")
-                self.emit("local.get $__struct_ptr")
-                # mangle it with the same elt_ty
-                append_fn = self._mangle("list_append", [elt_ty])
-                self.emit(f"call ${append_fn}")
-
-            # --- result of the literal is the head ptr ---
+            # finally leave the array ptr on the stack
             self.emit("local.get $__lit")
             return
         elif isinstance(expr, NullLiteral):
@@ -664,24 +654,96 @@ class CodeGen:
             self.emit(f"i32.load offset={off}")
             return
         
-        elif isinstance(expr, MethodCall):
-            # we rely on the semantic pass having set `expr.struct`
-            struct_ty: TypeExpr = expr.struct    # e.g. TypeExpr("list", [TypeExpr("int")]) # type: ignore
-            base   = struct_ty.name               # "list"
-            targs  = struct_ty.params             # [ TypeExpr("int") ]
-            # record that we need to monomorphize its methods
+        # --- intrinsic array methods (must go _before_ any static‐generic logic) ---
+        elif isinstance(expr, MethodCall) and expr.struct.name == "array": # type: ignore
+            # array.get(idx)
+            if expr.method == "get":
+                self.gen_expr(expr.receiver)        # arr_ptr
+                self.emit("i32.load offset=4")     # buf_ptr
+                self.gen_expr(expr.args[0])        # idx
+                self.emit("i32.const 4")
+                self.emit("i32.mul")
+                self.emit("i32.add")
+                self.emit("i32.load")
+                return
+
+            # array.set(idx, val)
+            if expr.method == "set":
+                self.gen_expr(expr.receiver)
+                self.emit("i32.load offset=4")
+                self.gen_expr(expr.args[0])
+                self.emit("i32.const 4")
+                self.emit("i32.mul")
+                self.emit("i32.add")
+                self.gen_expr(expr.args[1])
+                self.emit("i32.store")
+                return
+
+        # --- static method on a generic struct: Foo<T>.bar(...) ---
+        #     only when the left‐hand is the _type_ name itself
+        elif (isinstance(expr, MethodCall)
+              and isinstance(expr.receiver, Ident)
+              and expr.receiver.name == expr.struct.name): # type: ignore
+            struct_ty: TypeExpr = expr.struct   # e.g. TypeExpr("list",[TypeExpr("int")]) # type: ignore
+            base  = struct_ty.name
+            targs = struct_ty.params
+
+            # record for monomorphization
             key = (base, tuple(ta.name for ta in targs))
             self.struct_insts[key] = True
 
-            # mangle <struct>_<method>__<targs…>
-            mangled = self._mangle(f"{base}_{expr.method}", targs)
-
-            # emit receiver + all args
-            self.gen_expr(expr.receiver)
+            # emit just the explicit args
             for arg in expr.args:
                 self.gen_expr(arg)
 
+            mangled = self._mangle(f"{base}_{expr.method}", targs)
             self.emit(f"call ${mangled}")
+            return
+
+        # --- everything else is an _instance_‐method call ---
+        elif isinstance(expr, MethodCall):
+            struct_ty: TypeExpr = expr.struct # type: ignore
+            base, targs = struct_ty.name, struct_ty.params
+            key = (base, tuple(ta.name for ta in targs))
+            self.struct_insts[key] = True
+
+            # first the receiver
+            self.gen_expr(expr.receiver)
+            # then the rest of the args
+            for arg in expr.args:
+                self.gen_expr(arg)
+
+            mangled = self._mangle(f"{base}_{expr.method}", targs)
+            self.emit(f"call ${mangled}")
+            return
+
+        elif isinstance(expr, FunctionCall) and expr.name == "array":
+            # --- array<T>(length) constructor ---
+            # expr.type_args == [ eltType ]
+            # expr.args      == [ lengthExpr ]
+            #
+            # 1) compute header size & allocate it
+            header_size = self.struct_layouts["array"]["size"]
+            self.emit(f"i32.const {header_size}")
+            self.emit("call $malloc")
+            self.emit("local.set $__struct_ptr")      # $__struct_ptr = header_ptr
+
+            # 2) evaluate length argument
+            self.emit("local.get $__struct_ptr")      # stack: header_ptr
+            self.gen_expr(expr.args[0])               # stack: header_ptr, length
+            self.emit("i32.store offset=0")           # store length at [header_ptr + 0]
+
+            # 3) compute element-buffer size = length * sizeof(T)
+            self.emit("local.get $__struct_ptr")      # stack: header_ptr
+            self.gen_expr(expr.args[0])               # stack: header_ptr, length
+            self.emit("i32.const 4")                  # stack: header_ptr, length, 4
+            self.emit("i32.mul")                      # stack: header_ptr, byteCount
+            self.emit("call $malloc")                 # stack: header_ptr, buffer_ptr
+            self.emit("i32.store offset=4")           # store buffer_ptr at [header_ptr + 4]
+
+
+            # 4) return the header pointer
+            self.emit("local.get $__struct_ptr")
             return
 
         # --- struct‐constructor (monomorphic or generic) ---
@@ -745,3 +807,15 @@ class CodeGen:
         suffix = "_".join(arg.name for arg in type_args)
         #print(f"[DEBUG] Mangling {base} with type args {[*map(str, type_args)]} to {base}__{suffix}")
         return f"{base}__{suffix}"
+
+
+    def size_of(self, type_expr: TypeExpr) -> int:
+        if type_expr.name == "int":
+            return 4
+        elif type_expr.name == "boolean":
+            return 4
+        elif type_expr.name == "void":
+            return 0
+        elif type_expr.name in self.struct_layouts:
+            return self.struct_layouts[type_expr.name]["size"]
+        raise NotImplementedError(f"Unknown type: {type_expr}")

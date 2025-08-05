@@ -15,12 +15,7 @@ structure box<T>
 
 void main()
 {
-    list<int> a = [2];
-    list<int> b = null;
+    list<int> a = list<int>([1, 2, 3]);
 
-
-    print(a.get(0));
-
-    print(b.length());
-
+    print(a.get(1));
 }

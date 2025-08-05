@@ -24,9 +24,11 @@ from .ast import (
     MemberAssignment,
     MethodCall,
     NullLiteral,
-    ListLiteral,
+    ArrayLiteral,
     ImportDeclaration,
     TypeExpr,
+    FieldDeclaration,
+    MethodDeclaration,
 )
 from collections import defaultdict
 
@@ -52,6 +54,8 @@ def check(program: Program):
         if not isinstance(d, (ImportDeclaration, FunctionDeclaration, StructureDeclaration))
     ]
 
+
+
     # ---
     # 2) Gather struct‐templates
     #    key: struct name → ( type_params: list[str], sd:StructureDeclaration )
@@ -65,10 +69,54 @@ def check(program: Program):
             raise SemanticError(f"Structure '{d.name}' redefined", d.pos)
         struct_templates[d.name] = (d.type_params, d)
 
+
+
     structs: dict[TypeExpr, StructureDeclaration] = {}
     for name, (_tparams, sd) in struct_templates.items():
         structs[TypeExpr(name)] = sd
-    
+
+    array_sd = StructureDeclaration(
+    name="array",
+    type_params=["T"],
+    fields=[
+        FieldDeclaration("length",  TypeExpr("int")),
+        FieldDeclaration("buffer",  TypeExpr("T")),  # dummy, we won't treat it as a real field
+    ],
+    static_fields=[],
+    methods=[
+    MethodDeclaration(
+            name="array",
+            type_params=[],
+            params=[("length", TypeExpr("int"))],
+            return_type=TypeExpr("array", [TypeExpr("T")]),
+            body=[],           # empty body
+            is_static=True,
+            pos=None
+        ),
+        MethodDeclaration(
+        name="get",
+        type_params=[],
+        params=[("index", TypeExpr("int"))],
+        return_type=TypeExpr("T"),
+        body=[],
+        is_static=False,
+        pos=None
+        ),
+        MethodDeclaration(
+        name="set",
+        type_params=[],
+        params=[("index", TypeExpr("int")), ("value", TypeExpr("T"))],
+        return_type= TypeExpr("void"),
+        body=[],
+        is_static=False,
+        pos=None
+        )
+    ]
+    )
+
+    struct_templates["array"] = ( ["T"], array_sd )
+    # and also register it in `structs` so e.g. field-access will find it:
+    structs[ TypeExpr("array") ] = array_sd
     
     # ---
     # 3) Validate each struct’s **definition** (static fields, field decls, method signatures)
@@ -263,18 +311,18 @@ def check(program: Program):
             if isinstance(expr, NullLiteral):
                 return TypeExpr("*")  # null‐pointer wildcard
 
-            # list‐literal sugar (unchanged—uses bare 'list' ctor)
-            if isinstance(expr, ListLiteral):
+            # array‐literal sugar (unchanged—uses bare 'array' ctor)
+            if isinstance(expr, ArrayLiteral):
                 if not expr.elements:
                     return TypeExpr("*")
                 first_ty = infer(expr.elements[0])
                 for e in expr.elements[1:]:
                     t = infer(e)
                     if t != first_ty:
-                        raise SemanticError(f"List elements must all be {first_ty}, got {t}", e.pos)
-                # instantiate `list<…>` if needed
-                instantiate_struct("list", [first_ty])
-                return TypeExpr("list", [first_ty])
+                        raise SemanticError(f"Array elements must all be {first_ty}, got {t}", e.pos)
+                # instantiate `array<…>` if needed
+                instantiate_struct("array", [first_ty])
+                return TypeExpr("array", [first_ty])
 
             # variable / this
             if isinstance(expr, Ident):
@@ -317,6 +365,71 @@ def check(program: Program):
                     raise SemanticError(f"Logical '{expr.op}' expects booleans, got {lt},{rt}", pos)
                 raise SemanticError(f"Unknown binary '{expr.op}'", pos)
 
+
+            # --- static‐method‐on‐a‐generic‐struct? ---
+            if isinstance(expr, MethodCall) and isinstance(expr.receiver, Ident):
+                type_name = expr.receiver.name
+                # is this a struct template?
+                if type_name in struct_templates:
+                    # grab the template params and its declaration
+                    struct_tvars, struct_def = struct_templates[type_name]
+
+                    # Split expr.type_args into struct‐args vs method‐args
+                    n_struct = len(struct_tvars)
+                    struct_args = expr.type_args[:n_struct]
+                    method_args = expr.type_args[n_struct:]
+
+                    # instantiate that struct
+                    instantiate_struct(type_name, struct_args)
+
+                    # look up the static method in the declaration
+                    mdecl = next(
+                        (m for m in struct_def.methods
+                         if m.is_static and m.name == expr.method),
+                        None
+                    )
+                    if mdecl is None:
+                        raise SemanticError(
+                            f"Structure '{type_name}' has no static method '{expr.method}'",
+                            expr.pos
+                        )
+
+                    # check we got the right number of method‐type‐args
+                    if len(method_args) != len(mdecl.type_params):
+                        raise SemanticError(
+                            f"Static method '{type_name}.{expr.method}' expects "
+                            f"{len(mdecl.type_params)} type-arg(s), got {len(method_args)}",
+                            expr.pos
+                        )
+
+                    # build substitution maps
+                    struct_subst = dict(zip(struct_tvars, struct_args))
+                    method_subst = dict(zip(mdecl.type_params, method_args))
+
+                    def apply_ty(ty: TypeExpr) -> TypeExpr:
+                        # bare‐type case
+                        if not ty.params:
+                            if ty.name in method_subst:
+                                return method_subst[ty.name]
+                            if ty.name in struct_subst:
+                                return struct_subst[ty.name]
+                            return ty
+                        # otherwise recurse
+                        return TypeExpr(ty.name, [apply_ty(c) for c in ty.params])
+
+                    # type-check each argument
+                    for arg, (_pname, pty) in zip(expr.args, mdecl.params):
+                        at = subst(infer(arg))
+                        expty = apply_ty(pty)
+                        if at != expty:
+                            raise SemanticError(
+                                f"In call to '{type_name}.{expr.method}', expected {expty}, got {at}",
+                                arg.pos
+                            )
+
+                    # annotate for codegen and return the substituted return‐type
+                    expr.struct = TypeExpr(type_name, struct_args)  # for codegen later #type: ignore
+                    return apply_ty(mdecl.return_type)
             # --- method call ---
             if isinstance(expr, MethodCall):
                 # 1) infer the receiver’s type

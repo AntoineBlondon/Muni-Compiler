@@ -4,10 +4,12 @@ structure list<T>
     list<T> next;
 
 
-    list<T>(T value)
+    list<T>(array<T> value)
     {
-        this.value = value;
-        this.next = null;
+        this.value = value.get(0);
+        for (int i = 1; i < value.length; i = i + 1) {
+            this.append_element(value.get(i));
+        }
     }
 
     int length()
@@ -21,15 +23,13 @@ structure list<T>
 
     list<T> copy()
     {
-        list<T> copy = list<T>(this.value);
+        list<T> copy = list<T>([this.value]);
         for (list<T> cur = this.next; cur != null; cur = cur.next) {
-            copy.append(list<T>(cur.value));
+            copy.append(list<T>([cur.value]));
         }
         return copy;
     }
     
-    
-
     void append(list<T> other)
     {
         if (other == null) {
@@ -42,9 +42,8 @@ structure list<T>
 
     void append_element(T value)
     {
-        if (this == null) {
-            this.value = value;
-            this.next = null;
+        if (this.next == null) {
+            this.next = list<T>([value]);
         } else {
             this.next.append_element(value);
         }

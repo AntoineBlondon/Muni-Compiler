@@ -118,7 +118,7 @@ class Parser:
         is_local_decl = False
         if kind in ("INT_KW","BOOL_KW","VOID_KW"):
             is_local_decl = True
-        elif kind == "IDENT":
+        elif kind in ("IDENT", "ARRAY_KW"):
             # simple: IDENT name = …
             if (self.tokens[self.pos+1].kind == "IDENT" and
                 self.tokens[self.pos+2].kind == "ASSIGN"):
@@ -678,7 +678,7 @@ class Parser:
             self.next()
             return self.ast.BooleanLiteral(False, pos=(line,col))
 
-        # --- list‐literal sugar: [ e1, e2, … ] ---
+        # --- array‐literal sugar: [ e1, e2, … ] ---
         if kind == "LBRACK":
            self.next()  # consume “[”
            elems = []
@@ -689,14 +689,14 @@ class Parser:
                        self.next(); continue
                    break
            self.expect("RBRACK")
-           return self.ast.ListLiteral(elems, pos=(line,col))
+           return self.ast.ArrayLiteral(elems, pos=(line,col))
 
         if kind == "NULL_KW":
             self.next()
             return self.ast.NullLiteral(pos=(line,col))
 
         # identifier or function‐call
-        if kind == "IDENT":
+        if kind in ("IDENT", "ARRAY_KW"):
             name = text
             self.next()
             # call‐lookahead
@@ -734,6 +734,57 @@ class Parser:
             else:
                 self.pos = save
                 node = self.ast.Ident(name, pos=(line,col))
+
+            save = self.pos
+            if self.peek()=="LT" and self._looks_like_static_generic():
+                # parse struct‐type‐args
+                struct_args = []
+                is_method = True
+                self.next()
+                while True:
+                    struct_args.append(self.parse_type_expr())
+                    if self.peek()=="COMMA": self.next(); continue
+                    break
+                try:
+                    self.expect("GT")
+                except:
+                    is_method = False
+                if self.peek()=="DOT" and self.tokens[self.pos+1].kind=="IDENT" and self.tokens[self.pos+2].kind=="LPAREN" and is_method:
+                    # consume the dot
+                    self.next()
+                    
+                    method_name = self.expect("IDENT").text
+                    # optional <…> on the method itself
+                    method_args = []
+                    if self.peek()=="LT":
+                        self.next()
+                        while True:
+                            method_args.append(self.parse_type_expr())
+                            if self.peek()=="COMMA": self.next(); continue
+                            break
+                        self.expect("GT")
+                    # now the call parens
+                    self.expect("LPAREN")
+                    call_args = []
+                    if self.peek()!="RPAREN":
+                        while True:
+                            call_args.append(self.parse_expr())
+                            if self.peek()=="COMMA": self.next(); continue
+                            break
+                    self.expect("RPAREN")
+
+                    # rebuild as a single MethodCall whose receiver is the *type* Ident
+                    all_targs = struct_args + method_args
+                    return self.ast.MethodCall(
+                        self.ast.Ident(node.name, pos=node.pos),
+                        all_targs,
+                        method_name,
+                        call_args,
+                        pos=node.pos
+                    )
+            # if it didn’t match, roll back
+            self.pos = save
+
             # 1) any number of “.field” or “.method(...)”
             while self.peek() == "DOT":
                 self.next()  # consume '.'
@@ -767,7 +818,7 @@ class Parser:
                 else:
                     # simple field access
                     node = self.ast.MemberAccess(node, name, pos=(line,col))
-
+            
             return node
 
         # parenthesized sub‐expr
@@ -776,10 +827,20 @@ class Parser:
             expr = self.parse_expr()
             self.expect("RPAREN")
             return expr
+        
+        
+        
 
         raise SyntaxError(f"{line}:{col}: Unexpected token in primary: {kind}")
 
     def parse_type_expr(self):
+        if self.peek() == "ARRAY_KW":
+            self.next()            # consume `array`
+            self.expect("LT")
+            elt_ty = self.parse_type_expr()
+            self.expect("GT")
+            return self.ast.TypeExpr("array", [elt_ty])
+
         if self.peek() in ["INT_KW", "VOID_KW", "BOOL_KW"]:
             name = {"INT_KW": "int", "VOID_KW": "void", "BOOL_KW": "boolean"}[self.next().kind]
             return self.ast.TypeExpr(name)
@@ -796,3 +857,25 @@ class Parser:
                     break
                 self.expect("GT")            # '>'
             return self.ast.TypeExpr(name, params, pos=(tok.line,tok.col))
+
+    def _looks_like_static_generic(self):
+        # starting at self.pos, we should see:
+        #   LT, … matching GT, DOT, IDENT, LPAREN
+        depth = 0
+        i = self.pos
+        while i < len(self.tokens):
+            if self.tokens[i].kind == "LT":
+                depth += 1
+            elif self.tokens[i].kind == "GT":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        # now `i` points at the '>'
+        return (
+            depth == 0 and
+            i+3 < len(self.tokens) and
+            self.tokens[i+1].kind == "DOT" and
+            self.tokens[i+2].kind == "IDENT" and
+            self.tokens[i+3].kind == "LPAREN"
+        )

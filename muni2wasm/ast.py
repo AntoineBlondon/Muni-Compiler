@@ -195,11 +195,11 @@ class MemberAssignment:
         return f"{self.obj}.{self.field} <- {self.expr}"
 
 class MethodCall:
-    def __init__(self, receiver, type_args, method: str, args: list, pos=None):
+    def __init__(self, receiver, type_args, method: str, args: list, struct=None, pos=None):
         self.receiver = receiver  # an expression
         self.type_args = type_args
         self.method   = method    # method name
-        self.struct = None
+        self.struct = struct
         self.args     = args      # list of Expr
         self.pos      = pos
 
@@ -259,7 +259,7 @@ class NullLiteral:
         self.pos = pos
 
 
-class ListLiteral:
+class ArrayLiteral:
     def __init__(self, elements: list, pos=None):
         self.elements = elements  # list of Expr
         self.pos = pos
@@ -311,3 +311,5 @@ class TypeExpr:
         )
     def __hash__(self):
         return hash((self.name, tuple(self.params)))
+
+
