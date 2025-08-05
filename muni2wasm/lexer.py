@@ -3,6 +3,8 @@ from collections import namedtuple
 
 
 TOKEN_SPEC = [
+    (r'"(?:\\.|[^"\\])*"',      "STRING"),
+    (r"'(?:\\.|[^'\\])'",       "CHAR"),
     (r"null\b",                 "NULL_KW"),
     (r"void\b",                 "VOID_KW"),
     (r"int\b",                  "INT_KW"),

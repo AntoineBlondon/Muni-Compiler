@@ -1,0 +1,77 @@
+structure vec<T>
+{
+    array<T> data;
+    int size;
+    int capacity;
+
+    vec<T>(int capacity)
+    {
+        this.data = array<T>(capacity);
+        this.size = 0;
+        this.capacity = capacity;
+    }
+
+    static vec<T> from_array(array<T> from)
+    {
+        vec<T> new_vec = vec<T>(from.length);
+        for (int i = 0; i < from.length; i = i + 1) {
+            new_vec.set(i, from.get(i));
+        }
+        return new_vec;
+    }
+
+    array<T> to_array()
+    {
+        array<T> a = array<T>(this.size);
+        for (int i = 0; i < this.size; i = i + 1) {
+            a.set(i, this.get(i));
+        }
+        return a;
+    }
+
+    void reserve(int new_capacity)
+    {
+        if (new_capacity <= this.capacity) {
+            return;
+        } 
+        vec<T> tmp = vec<T>(new_capacity);
+        for (int i = 0; i < this.capacity; i = i + 1) {
+            tmp.data.set(i, this.data.get(i));
+        }
+        this.data = tmp.data;
+        this.capacity = new_capacity;
+    }
+
+    void shrink_to_fit() { this.reserve(this.size); }
+
+    T get(int idx)
+    {
+        return this.data.get(idx);
+    }
+
+    void set(int idx, T val)
+    {   
+        if (this.size <= idx) {
+            this.size = idx + 1;
+        }
+        this.data.set(idx, val);
+    }
+
+    void push_back(T value)
+    {
+        if (this.size + 1 > this.capacity) {
+            int new_capacity = 4;
+            if (this.capacity != 0) { new_capacity = this.capacity * 2; }
+            this.reserve(new_capacity);
+        }
+        this.set(this.size, value);
+    }
+
+    T pop_back()
+    {
+        this.size = this.size - 1;
+        return this.data.get(this.size);
+    }
+
+
+}

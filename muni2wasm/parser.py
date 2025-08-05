@@ -184,7 +184,7 @@ class Parser:
                 if pk in ("INT_KW","BOOL_KW","VOID_KW"):
                     t = self.next().kind
                     params.append(self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[t]))
-                elif pk == "IDENT":
+                elif pk in ("IDENT", "ARRAY_KW"):
                     params.append(self.ast.TypeExpr(self.next().text))
                 else:
                     p = self.peek_token()
@@ -198,7 +198,7 @@ class Parser:
         rt_kind = self.peek()
         if rt_kind in ("INT_KW","BOOL_KW","VOID_KW"):
             rt = self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[self.next().kind])
-        elif rt_kind == "IDENT":
+        elif rt_kind in ("IDENT", "ARRAY_KW"):
             rt = self.ast.TypeExpr(self.next().text)
         else:
             p = self.peek_token()
@@ -288,7 +288,7 @@ class Parser:
                             ctor_params.append((p_name, p_ty))
                             if self.peek() == "COMMA":
                                 self.next(); continue
-                            break
+                            break   
                     self.expect("RPAREN")
 
                     # body
@@ -315,7 +315,7 @@ class Parser:
                     continue
 
             # --- normal instance field:  <type> <name>; ---
-            if self.peek() in ("INT_KW","BOOL_KW","IDENT"):
+            if self.peek() in ("INT_KW","BOOL_KW","IDENT", "ARRAY_KW"):
                 # look‐ahead past any generic args to see if we really have
                 #   <type> <name> ;
                 j = self.pos + 1
@@ -790,7 +790,7 @@ class Parser:
                 self.next()  # consume '.'
                 name = self.expect("IDENT").text
                 type_args = []
-                if self.peek() == "LT":
+                if self.peek() == "LT" and self._looks_like_method_generic():
                     self.next()
                     while True:
                         try: 
@@ -801,7 +801,10 @@ class Parser:
                         except:
                             is_function = False
                             break
-                    if is_function: self.expect("GT")
+                    try:
+                        self.expect("GT")
+                    except:
+                        is_function = False
 
                 # 1a) method call?
                 if self.peek() == "LPAREN":
@@ -879,3 +882,16 @@ class Parser:
             self.tokens[i+2].kind == "IDENT" and
             self.tokens[i+3].kind == "LPAREN"
         )
+    def _looks_like_method_generic(self):
+        # starting at a '<', scan forward to its matching '>'
+        depth = 0
+        for i in range(self.pos, len(self.tokens)):
+            if self.tokens[i].kind == "LT":
+                depth += 1
+            elif self.tokens[i].kind == "GT":
+                depth -= 1
+                if depth == 0:
+                    # now i points at the '>'
+                    return i + 1 < len(self.tokens) and \
+                           self.tokens[i+1].kind == "LPAREN"
+        return False

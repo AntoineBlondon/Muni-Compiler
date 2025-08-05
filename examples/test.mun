@@ -1,4 +1,4 @@
-import <list.mun>;
+import <vector.mun>;
 import env.print(int) -> void;
 
 structure box<T>
@@ -15,7 +15,14 @@ structure box<T>
 
 void main()
 {
-    list<int> a = list<int>([1, 2, 3]);
+    vec<int> a = vec<int>.from_array([1, 2, 3]);
+    print(a.size);
 
-    print(a.get(1));
+
+    a.push_back(42);
+    print(a.size);
+    print(a.get(3));
+
+    print(a.pop_back());
+    print(a.size);
 }
