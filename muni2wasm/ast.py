@@ -273,12 +273,14 @@ class ImportDeclaration:
                module: str | None = None,
                name:   str | None = None,
                params = None,
+               type_params = None,
                return_type = None,
                pos=None):
       self.source      = source       # e.g. "math.mun"
       self.module      = module       # e.g. "env" or "random"
       self.name        = name         # e.g. "print" or "randint"
       self.params      = params or [] # ["int"], ["list"], …
+      self.type_params = type_params or []  # e.g. ["T"] for generic imports
       self.return_type = return_type  # "void", "int", or struct name
       self.pos         = pos
   def __str__(self):
@@ -313,3 +315,20 @@ class TypeExpr:
         return hash((self.name, tuple(self.params)))
 
 
+
+
+# in muni2wasm/ast.py
+
+class AliasDeclaration():
+    def __init__(self, name: str, type_params: list[str], aliased: TypeExpr, pos=None):
+        self.name         = name
+        self.type_params  = type_params
+        self.aliased      = aliased
+        self.pos          = pos
+
+    def __str__(self):
+        if self.type_params:
+            return f"alias {self.name}<{', '.join(self.type_params)}> = {self.aliased};"
+        return f"alias {self.name} = {self.aliased};"
+    
+    

@@ -1,0 +1,12 @@
+import <vector.mun>;
+import env.print(int) -> void;
+
+alias char = int;
+
+alias string = vec<char>;
+
+void main()
+{
+    string x = string.from_array([65]);
+    print(x.get(0));
+}

@@ -8,7 +8,7 @@ from .lexer import tokenize
 from .ast import Program, ImportDeclaration
 from .parser import Parser
 from .codegen_wat import CodeGen
-from .semantics import check, SemanticError
+from .semantics import SemanticError, SemanticChecker
 
 # Try to import wasmtime for the "run" command
 try:
@@ -23,7 +23,7 @@ def compile_to_wat(source: str, base_dir: str | None = None) -> str:
     if base_dir is None:
         base_dir = os.getcwd()
     ast = _inline_file_imports(ast, base_dir)
-    check(ast)
+    SemanticChecker(ast).check()
     return CodeGen(ast).gen()
 
 def compile_file(input_file: str, output_file: str):

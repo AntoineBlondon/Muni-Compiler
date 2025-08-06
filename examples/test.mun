@@ -11,10 +11,25 @@ structure box<T>
     }
 }
 
+structure pair<K, V>
+{
+    K first;
+    V second;
 
+    pair<K, V>(K first, V second)
+    {
+        this.first = first;
+        this.second = second;
+    }
+}
+
+alias char = int;
+
+alias string = vec<char>;
 
 void main()
 {
+    /*
     vec<int> a = vec<int>.from_array([1, 2, 3]);
     print(a.size);
 
@@ -25,4 +40,9 @@ void main()
 
     print(a.pop_back());
     print(a.size);
+    */
+
+    string a = string.from_array([65]);
+
+    print(a.get(0));
 }

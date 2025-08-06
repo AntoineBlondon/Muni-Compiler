@@ -55,6 +55,8 @@ class Parser:
                     and self.tokens[self.pos+1].kind=="IDENT"
                     and self.tokens[self.pos+2].kind in ("LT","LPAREN")):
                 decls.append(self.parse_function_declaration())
+            elif self.peek() == "ALIAS_KW":
+                decls.append(self.parse_alias_declaration())
             elif self.peek() == "STRUCTURE_KW":
                 decls.append(self.parse_structure_declaration())
             else:
@@ -210,6 +212,25 @@ class Parser:
             return_type=rt,
             pos=(tok.line, tok.col)
         )
+
+    def parse_alias_declaration(self):
+        tok = self.expect("ALIAS_KW")
+        name = self.expect("IDENT").text
+
+        # optional generic parameters:
+        type_params = []
+        if self.peek() == "LT":
+            self.next()
+            while True:
+                type_params.append(self.expect("IDENT").text)
+                if self.peek()=="COMMA": self.next(); continue
+                break
+            self.expect("GT")
+
+        self.expect("ASSIGN")
+        aliased = self.parse_type_expr()
+        self.expect("SEMI")
+        return self.ast.AliasDeclaration(name, type_params, aliased, pos=(tok.line,tok.col))
 
     def parse_structure_declaration(self):
         kw       = self.expect("STRUCTURE_KW")

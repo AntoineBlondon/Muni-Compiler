@@ -14,6 +14,7 @@ TOKEN_SPEC = [
     (r"structure\b",            "STRUCTURE_KW"),
     (r"static\b",               "STATIC_KW"),
     (r"return\b",               "RETURN_KW"),
+    (r"alias\b",                "ALIAS_KW"),
     (r"if\b",                   "IF_KW"),
     (r"else\b",                 "ELSE_KW"),
     (r"for\b",                  "FOR_KW"),
@@ -27,6 +28,8 @@ TOKEN_SPEC = [
     (r"[0-9]+",                 "NUMBER"),
     (r"[A-Za-z_][A-Za-z0-9_]*", "IDENT"),
     (r"->",                     "RARROW"),
+    (r"#.*",                     None),
+    (r"/\*[\s\S]*?\*/",          None),
     (r"[+\-*/%]=?|&&|\|\||==|!=|<=|>=|!",     "OP"),
     (r"<",                      "LT"),
     (r">",                      "GT"),
@@ -40,8 +43,6 @@ TOKEN_SPEC = [
     (r"\}",                     "RBRACE"),
     (r"\[",                     "LBRACK"),
     (r"\]",                     "RBRACK"),
-    (r"#.*",                     None),
-    (r"/\*[\s\S]*?\*/",          None),
     (r"\s+",                     None),
 ]
 
