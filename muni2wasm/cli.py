@@ -1,8 +1,11 @@
+from curses import raw
 import sys
 import os
 import subprocess
 import tempfile
 import argparse
+
+from wasmtime import Memory
 
 from .lexer import tokenize
 from .ast import Program, ImportDeclaration
@@ -111,19 +114,74 @@ def run_wasm(wasm_file: str):
 
     store = Store()
     linker = Linker(store.engine)
-
+    
+    
     def wasi_print(x: int) -> None:
         print(x)
+    
+    
+
+
+    def wasi_print_string(vec_ptr: int) -> None:
+        """
+        Print a string from a vec<char> (vec<int>) structure in WASM memory.
+        
+        Memory layout:
+        vec<int> at vec_ptr:
+        0-4:   data (pointer to array<int> struct)
+        4-8:   size (number of characters)
+        8-12:  capacity
+        
+        array<int> struct at data pointer:
+        0-4:   length
+        4-8:   buffer (pointer to actual int array)
+        """
+        
+        # 1) Read the 'data' field from vec struct (pointer to array<int>)
+        data_array_ptr = int.from_bytes(
+            memory.read(store, vec_ptr, vec_ptr + 4),
+            "little",
+        )
+        
+        # 2) Read the 'size' field from vec struct (number of characters)
+        size = int.from_bytes(
+            memory.read(store, vec_ptr + 4, vec_ptr + 8),
+            "little",
+        )
+        
+        # 3) From the array struct, read the 'buffer' field (pointer to int array)
+        buf_ptr = int.from_bytes(
+            memory.read(store, data_array_ptr + 4, data_array_ptr + 8),
+            "little",
+        )
+        
+        # 4) Read size*4 bytes starting at buf_ptr (each int is 4 bytes)
+        raw = memory.read(store, buf_ptr, buf_ptr + size * 4)
+        
+        # 5) Extract the low byte of each little-endian 32-bit int
+        chars = bytes(raw[i] for i in range(0, len(raw), 4))
+        
+        # 6) Decode and print
+        print(chars.decode("utf-8", errors="replace"))
 
     linker.define_func(
         "env", "print",
         FuncType([ValType.i32()], []),
         wasi_print
     )
-
-    module = Module.from_file(store.engine, wasm_file)
+    linker.define_func(
+        "env", "print_str",
+        FuncType([ValType.i32()], []),
+        wasi_print_string
+    )
+    module   = Module.from_file(store.engine, wasm_file)
     instance = linker.instantiate(store, module)
-
+    memory: Memory = instance.exports(store).get("memory") # type: ignore
+    if memory is None:
+        print("Error: module has no `memory` export", file=sys.stderr)
+        sys.exit(1)
+    
+    
     main_fn = instance.exports(store).get("main")
     if main_fn is None:
         print("Error: no `main` export found in module.", file=sys.stderr)

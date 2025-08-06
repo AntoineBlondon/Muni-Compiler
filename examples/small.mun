@@ -1,12 +1,9 @@
 import <vector.mun>;
-import env.print(int) -> void;
+import env.print_str(string) -> void;
 
-alias char = int;
-
-alias string = vec<char>;
 
 void main()
 {
-    string x = string.from_array([65]);
-    print(x.get(0));
+    string x = "Hello, World!";
+    print_str(x);
 }

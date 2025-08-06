@@ -163,6 +163,7 @@ class Parser:
     
     def parse_import_declaration(self):
         tok = self.expect("IMPORT_KW")
+
         # --- source-file import ---
         if self.peek() == "LT":
             self.expect("LT")
@@ -174,43 +175,31 @@ class Parser:
             return self.ast.ImportDeclaration(source=path, pos=(tok.line,tok.col))
 
         # --- host import:  module.name(params…) -> retType; ---
-        mod = self.expect("IDENT").text
+        mod  = self.expect("IDENT").text
         self.expect("DOT")
-        function_name  = self.expect("IDENT").text
+        fn   = self.expect("IDENT").text
         self.expect("LPAREN")
-        params = []
+
+        params: list = []
         if self.peek() != "RPAREN":
             while True:
-                # allow INT_KW|BOOL_KW|VOID_KW or IDENT (for structs)
-                pk = self.peek()
-                if pk in ("INT_KW","BOOL_KW","VOID_KW"):
-                    t = self.next().kind
-                    params.append(self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[t]))
-                elif pk in ("IDENT", "ARRAY_KW"):
-                    params.append(self.ast.TypeExpr(self.next().text))
-                else:
-                    p = self.peek_token()
-                    raise SyntaxError(f"{p.line}:{p.col}: Unexpected type {pk}")
-                if self.peek()=="COMMA":
-                    self.next(); continue
+                params.append(self.parse_type_expr())
+                if self.peek() == "COMMA":
+                    self.next()
+                    continue
                 break
         self.expect("RPAREN")
         self.expect("RARROW")
-        # return‐type
-        rt_kind = self.peek()
-        if rt_kind in ("INT_KW","BOOL_KW","VOID_KW"):
-            rt = self.ast.TypeExpr({"INT_KW":"int","BOOL_KW":"boolean","VOID_KW":"void"}[self.next().kind])
-        elif rt_kind in ("IDENT", "ARRAY_KW"):
-            rt = self.ast.TypeExpr(self.next().text)
-        else:
-            p = self.peek_token()
-            raise SyntaxError(f"{p.line}:{p.col}: Unexpected return type {rt_kind}")
+
+        ret_type = self.parse_type_expr()
+
         self.expect("SEMI")
         return self.ast.ImportDeclaration(
-            module=mod, name=function_name,
-            params=params,
-            return_type=rt,
-            pos=(tok.line, tok.col)
+            module      = mod,
+            name        = fn,
+            params      = params,
+            return_type = ret_type,
+            pos         = (tok.line, tok.col)
         )
 
     def parse_alias_declaration(self):
@@ -715,6 +704,14 @@ class Parser:
         if kind == "NULL_KW":
             self.next()
             return self.ast.NullLiteral(pos=(line,col))
+        
+        if kind == "CHAR":
+            self.next()
+            return self.ast.CharLiteral(text, pos=(line,col))
+        
+        if kind == "STRING":
+            self.next()
+            return self.ast.StringLiteral(text, pos=(line,col))
 
         # identifier or function‐call
         if kind in ("IDENT", "ARRAY_KW"):

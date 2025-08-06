@@ -331,4 +331,22 @@ class AliasDeclaration():
             return f"alias {self.name}<{', '.join(self.type_params)}> = {self.aliased};"
         return f"alias {self.name} = {self.aliased};"
     
-    
+
+
+class CharLiteral:
+    def __init__(self, value: str, pos=None):
+        if len(value) != 1:
+            raise ValueError("CharLiteral must be a single character")
+        self.value = value
+        self.pos = pos
+
+    def __str__(self):
+        return f"char('{self.value}')"
+
+class StringLiteral:
+    def __init__(self, value: str, pos=None):
+        self.value = value
+        self.pos = pos
+
+    def __str__(self):
+        return f'string("{self.value}")'

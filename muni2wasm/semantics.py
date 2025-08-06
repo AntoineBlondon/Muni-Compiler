@@ -28,6 +28,8 @@ from .ast import (
     TypeExpr,
     FieldDeclaration,
     MethodDeclaration,
+    CharLiteral,
+    StringLiteral,
 )
 
 class SemanticError(Exception):
@@ -109,6 +111,8 @@ class SemanticChecker:
             if not isinstance(d, (ImportDeclaration, FunctionDeclaration, StructureDeclaration, AliasDeclaration))
         ]
 
+        self.define_char_and_string()
+
         self.alias_map = {
             alias.name: (alias.type_params, alias.aliased)
             for alias in self.raw_aliases
@@ -123,11 +127,12 @@ class SemanticChecker:
         ]
     
     def expand_aliases(self):
+        # 1) rewrite all the *declaration* sites
         for d in self.program.decls:
             if isinstance(d, FunctionDeclaration):
                 d.return_type = self.resolve_alias(d.return_type)
-                for i, (n, pty) in enumerate(d.params):
-                    d.params[i] = (n, self.resolve_alias(pty))
+                for i, (name, pty) in enumerate(d.params):
+                    d.params[i] = (name, self.resolve_alias(pty))
 
             elif isinstance(d, StructureDeclaration):
                 for f in d.fields:
@@ -136,8 +141,17 @@ class SemanticChecker:
                     sf.type = self.resolve_alias(sf.type)
                 for m in d.methods:
                     m.return_type = self.resolve_alias(m.return_type)
-                    for j, (n, pty) in enumerate(m.params):
-                        m.params[j] = (n, self.resolve_alias(pty))
+                    for j, (name, pty) in enumerate(m.params):
+                        m.params[j] = (name, self.resolve_alias(pty))
+
+            elif isinstance(d, ImportDeclaration):
+                for i, type_expr in enumerate(d.params):
+                    d.params[i] = self.resolve_alias(type_expr)
+                
+                d.return_type = self.resolve_alias(d.return_type) # type: ignore
+
+
+        # 2) now rewrite every statement (and every expression inside) in every function & top level
         for fd in self.func_decls:
             for stmt in fd.body:
                 self.rewrite_types_in_stmt(stmt)
@@ -148,22 +162,116 @@ class SemanticChecker:
         # if this is a local var decl, rewrite its declared type:
         if isinstance(stmt, VariableDeclaration):
             stmt.type = self.resolve_alias(stmt.type)
+            stmt.expr = self.rewrite_types_in_expr(stmt.expr) if stmt.expr else None
 
-        # now recurse through any child‐statements:
+        # if this is an assignment to a local, rewrite the RHS expr:
+        if isinstance(stmt, VariableAssignment):
+            stmt.expr = self.rewrite_types_in_expr(stmt.expr)
+
+        # if this is return, rewrite the returned expr:
+        if isinstance(stmt, ReturnStmt) and stmt.expr is not None:
+            stmt.expr = self.rewrite_types_in_expr(stmt.expr)
+        
+
+        # recurse into sub-statements:
         for child_list in (
-        getattr(stmt, "body", []),
-        getattr(stmt, "then_stmts", []),
-        getattr(stmt, "else_stmts", []),
-        getattr(stmt, "else_body", []),
-        [stmt.init]   if hasattr(stmt, "init")   and stmt.init   else [],
-        [stmt.cond]   if hasattr(stmt, "cond")   and stmt.cond   else [],
-        [stmt.post]   if hasattr(stmt, "post")   and stmt.post   else [],
-        [stmt.count]  if hasattr(stmt, "count")  and stmt.count  else [],
+            getattr(stmt, "body", []),
+            getattr(stmt, "then_stmts", []),
+            getattr(stmt, "else_stmts", []),
+            getattr(stmt, "else_body", []),
         ):
             for s in child_list:
                 self.rewrite_types_in_stmt(s)
-        
-    
+
+        # handle loop heads:
+        if hasattr(stmt, "init") and stmt.init:                                  # type: ignore
+            if isinstance(stmt.init, (VariableDeclaration, VariableAssignment)): # type: ignore
+                self.rewrite_types_in_stmt(stmt.init)                            # type: ignore
+        if hasattr(stmt, "cond") and stmt.cond:                                  # type: ignore
+            stmt.cond = self.rewrite_types_in_expr(stmt.cond)                    # type: ignore
+        if hasattr(stmt, "post") and stmt.post:                                  # type: ignore
+            if isinstance(stmt.post, (VariableDeclaration, VariableAssignment)): # type: ignore
+                self.rewrite_types_in_stmt(stmt.post)                            # type: ignore
+
+    def rewrite_types_in_expr(self, expr):
+        # MethodCall: rewrite receiver *and* its own type_args
+        if isinstance(expr, MethodCall):
+            # rewrite all arg-expressions first
+            expr.args = [self.rewrite_types_in_expr(a) for a in expr.args]
+
+            # if the receiver is a plain Ident whose name is an alias:
+            if isinstance(expr.receiver, Ident) and expr.receiver.name in self.alias_map:
+                # splice in the real struct name + params
+                alias_ty = TypeExpr(expr.receiver.name, expr.type_args)
+                real_ty  = self.resolve_alias(alias_ty)
+                expr.receiver.name = real_ty.name
+                expr.type_args     = real_ty.params
+
+            # also rewrite any expressions inside the receiver itself:
+            expr.receiver = self.rewrite_types_in_expr(expr.receiver)
+            return expr
+
+        # FunctionCall: its args may contain type aliases in sub-expressions
+        if isinstance(expr, FunctionCall):
+            # first rewrite all the arg-expressions
+            expr.args = [self.rewrite_types_in_expr(a) for a in expr.args]
+
+            # if this is actually an alias-based constructor, splice it out:
+            if expr.name in self.alias_map:
+                # build the “fake” TypeExpr of the alias
+                alias_ty = TypeExpr(expr.name, expr.type_args)
+                # resolve it to the real underlying type
+                real_ty  = self.resolve_alias(alias_ty)
+                # replace name & type_args with the resolved struct & its params
+                expr.name      = real_ty.name
+                expr.type_args = real_ty.params
+
+            return expr
+
+        # MemberAccess / MemberAssignment
+        if isinstance(expr, MemberAccess):
+            expr.obj = self.rewrite_types_in_expr(expr.obj)
+            return expr
+
+        if isinstance(expr, MemberAssignment):
+            expr.obj  = self.rewrite_types_in_expr(expr.obj)
+            expr.expr = self.rewrite_types_in_expr(expr.expr)
+            return expr
+
+        # Binary/Unary operators recurse
+        if isinstance(expr, BinOp):
+            expr.left  = self.rewrite_types_in_expr(expr.left)
+            expr.right = self.rewrite_types_in_expr(expr.right)
+            return expr
+
+        if isinstance(expr, UnaryOp):
+            expr.expr = self.rewrite_types_in_expr(expr.expr)
+            return expr
+
+        # ArrayLiteral
+        if isinstance(expr, ArrayLiteral):
+            expr.elements = [self.rewrite_types_in_expr(e) for e in expr.elements]
+            return expr
+
+        # all other exprs are terminals (Number, BooleanLiteral, Ident, NullLiteral)
+        return expr
+
+    def define_char_and_string(self):
+        char_alias = AliasDeclaration(
+            name="char",
+            type_params=[],
+            aliased=TypeExpr("int")
+        )
+
+        string_alias = AliasDeclaration(
+            name="string",
+            type_params=[],
+            aliased=TypeExpr("vec", [TypeExpr("char")])
+        )
+
+        self.raw_aliases.append(char_alias)
+        self.raw_aliases.append(string_alias)
+
     def define_array(self):
         array_struct_decl = StructureDeclaration(
             name="array",
@@ -482,6 +590,18 @@ class SemanticChecker:
                     raise SemanticError(f"Array elements must all be {array_type}, got {element_type}", pos)
             self.instantiate_struct("array", [array_type])
             return TypeExpr("array", [array_type])
+        
+        if isinstance(expr, CharLiteral):
+            return TypeExpr("int")
+
+        if isinstance(expr, StringLiteral):
+            # string is a vec<char>
+            char_ty = TypeExpr("int")
+            vec_ty  = TypeExpr("vec", [char_ty])
+            # register/check vec<char>
+            self.instantiate_struct("vec", [char_ty])
+            return vec_ty
+
         
         if isinstance(expr, Ident):
             if expr.name not in symbol_table:

@@ -24,6 +24,8 @@ from .ast import (
     MethodCall,
     NullLiteral,
     ArrayLiteral,
+    StringLiteral,
+    CharLiteral,
     ImportDeclaration,
     TypeExpr
 )
@@ -598,6 +600,36 @@ class CodeGen:
 
             # finally leave the array ptr on the stack
             self.emit("local.get $__lit")
+            return
+        elif isinstance(expr, CharLiteral):
+            # Convert char to its ASCII value
+            ascii_value = ord(expr.value)
+            self.emit(f"i32.const {ascii_value}")
+        elif isinstance(expr, StringLiteral):
+            # 1) turn the Python str into a series of CharLiterals:
+            chars = [ CharLiteral(c, pos=expr.pos) for c in expr.value[1:-1] ]
+
+            # 2) build an array literal AST for [c0, c1, ...]:
+            array_lit = ArrayLiteral(chars, pos=expr.pos)
+
+            # 3) call vec<char>.from_array( array_lit ):
+            char_ty = TypeExpr("int")
+            vec_ty  = TypeExpr("vec", [char_ty])
+
+            # a dummy Ident holding the struct for codegen:
+            rcvr = Ident("vec", pos=expr.pos)
+            # annotate its struct so gen_expr knows we're calling vec<char>
+            method_call = MethodCall(
+                receiver = rcvr,
+                type_args = [char_ty],      # struct type-arg
+                method    = "from_array",
+                args      = [ array_lit ],
+                struct    = vec_ty,         # <--- this is critical
+                pos       = expr.pos
+            )
+
+            # now generate code for that call:
+            self.gen_expr(method_call)
             return
         elif isinstance(expr, NullLiteral):
             self.emit("i32.const 0")
