@@ -25,6 +25,7 @@ def compile_to_wat(source: str, base_dir: str | None = None) -> str:
     ast = Parser(tokens).parse()
     if base_dir is None:
         base_dir = os.getcwd()
+    ast = import_standard_files(ast, base_dir)
     ast = _inline_file_imports(ast, base_dir)
     SemanticChecker(ast).check()
     return CodeGen(ast).gen()
@@ -106,6 +107,27 @@ def _inline_file_imports(ast: Program, base_dir: str, seen: set[str]=None) -> Pr
     ast.decls = new_decls
     return ast
 
+def import_standard_files(ast: Program, base_dir: str) -> Program:
+    """
+    Import standard library files into the AST.
+    This is done by looking for files in the `std` directory relative to the base_dir.
+    """
+    std_dir = os.path.join(base_dir, "../std")
+    if not os.path.isdir(std_dir):
+        return ast  # No standard library, nothing to import
+
+    # List all .mun files in the std directory
+    for filename in os.listdir(std_dir):
+        if filename.endswith(".mun"):
+            path = os.path.join(std_dir, filename)
+            src = open(path, "r").read()
+            toks = tokenize(src)
+            child = Parser(toks).parse()
+            child = _inline_file_imports(child, std_dir)
+            ast.decls.extend(child.decls)
+
+    return ast
+
 
 def run_wasm(wasm_file: str):
     if not _HAS_WASMTIME:
@@ -163,6 +185,12 @@ def run_wasm(wasm_file: str):
         
         # 6) Decode and print
         print(chars.decode("utf-8", errors="replace"))
+    
+    def wasi_write_chr(x: int) -> None:
+        """
+        Print a single character (int) to stdout.
+        """
+        print(chr(x), end='')
 
     linker.define_func(
         "env", "print",
@@ -173,6 +201,11 @@ def run_wasm(wasm_file: str):
         "env", "print_str",
         FuncType([ValType.i32()], []),
         wasi_print_string
+    )
+    linker.define_func(
+        "env", "write_chr",
+        FuncType([ValType.i32()], []),
+        wasi_write_chr
     )
     module   = Module.from_file(store.engine, wasm_file)
     instance = linker.instantiate(store, module)

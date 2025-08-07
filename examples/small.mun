@@ -1,9 +1,7 @@
-import <vector.mun>;
-import env.print_str(string) -> void;
 
 
 void main()
 {
     string x = "Hello, World!";
-    print_str(x);
+    print(x);
 }

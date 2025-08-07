@@ -1,0 +1,11 @@
+import env.write_chr(char) -> void;
+
+
+
+void print(string s)
+{
+    for (int i = 0; i < s.size; i = i + 1) {
+        write_chr(s.get(i));
+    }
+    write_chr('\n');
+}

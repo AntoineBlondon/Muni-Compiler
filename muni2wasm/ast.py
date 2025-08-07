@@ -1,3 +1,6 @@
+import ast
+
+
 class Program:
     def __init__(self, decls, pos=None):
         self.decls = decls
@@ -334,9 +337,13 @@ class AliasDeclaration():
 
 
 class CharLiteral:
-    def __init__(self, value: str, pos=None):
+    def __init__(self, literal: str, pos=None):
+        try:
+            value = ast.literal_eval(literal)
+        except Exception as e:
+            raise SyntaxError(f"Bad character literal {literal}") from e
         if len(value) != 1:
-            raise ValueError("CharLiteral must be a single character")
+            raise ValueError(f"Character literal must be exactly one character, got {literal!r}")
         self.value = value
         self.pos = pos
 
@@ -344,7 +351,11 @@ class CharLiteral:
         return f"char('{self.value}')"
 
 class StringLiteral:
-    def __init__(self, value: str, pos=None):
+    def __init__(self, literal: str, pos=None):
+        try:
+            value = ast.literal_eval(literal)
+        except Exception as e:
+            raise SyntaxError(f"Bad string literal {literal}") from e
         self.value = value
         self.pos = pos
 

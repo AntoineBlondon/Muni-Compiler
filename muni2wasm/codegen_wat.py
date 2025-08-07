@@ -607,7 +607,7 @@ class CodeGen:
             self.emit(f"i32.const {ascii_value}")
         elif isinstance(expr, StringLiteral):
             # 1) turn the Python str into a series of CharLiterals:
-            chars = [ CharLiteral(c, pos=expr.pos) for c in expr.value[1:-1] ]
+            chars = [ CharLiteral(repr(c), pos=expr.pos) for c in expr.value ]
 
             # 2) build an array literal AST for [c0, c1, ...]:
             array_lit = ArrayLiteral(chars, pos=expr.pos)

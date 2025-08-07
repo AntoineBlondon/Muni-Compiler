@@ -374,9 +374,10 @@ class SemanticChecker:
         for function_declaration in self.func_decls:
             if function_declaration.name in self.func_sigs:
                 raise SemanticError(f"Redefinition of function '{function_declaration.name}'", function_declaration.pos)
+            param_types = [pty for (_n, pty) in function_declaration.params]
             self.func_sigs[function_declaration.name] = (
                 function_declaration.type_params, # TODO check
-                function_declaration.params,
+                param_types,
                 function_declaration.return_type
             )
         self.generic_functions = { f.name for f in self.func_decls if f.type_params }
@@ -573,7 +574,6 @@ class SemanticChecker:
             return TypeExpr(t.name, [subst(c) for c in t.params])
 
         return self.resolve_alias(subst(aliased), seen)
-
 
     def infer(self, expr, symbol_table, substitution_map, struct_templates_params) -> TypeExpr:
         pos = getattr(expr, "pos", None)
@@ -782,7 +782,6 @@ class SemanticChecker:
             
             for arg, param_type in zip(expr.args, ptypes):
                 arg_type = self.infer(arg, symbol_table, substitution_map, struct_templates_params)
-
                 expected_type = self.subst(param_type, f_sub_map)
                 if arg_type != expected_type:
                     raise SemanticError(
