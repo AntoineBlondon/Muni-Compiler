@@ -1,7 +1,0 @@
-
-
-void main()
-{
-    string x = "Hello, World!";
-    print(x);
-}
