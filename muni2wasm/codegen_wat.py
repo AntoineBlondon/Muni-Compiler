@@ -501,6 +501,13 @@ class CodeGen:
 
         # DoStmt
         if isinstance(stmt, DoStmt):
+            if stmt.count is None:
+                stmt.count = Number("1")
+            try:
+                if stmt.count.value == 0:
+                    return
+            except Exception:
+                pass
             saved = list(self.locals)
             br_lbl, cont_lbl, _ = (
                 self._fresh_label("do_break"),
@@ -512,21 +519,17 @@ class CodeGen:
             self._loop_stack.append((br_lbl, cont_lbl, None))  # type: ignore
 
             self.emit(f"block {br_lbl}")
-            if stmt.count is None:
-                stmt.count = Number("1")
-
-            if stmt.count is not None:
-                self.gen_expr(stmt.count)
-                self.emit("local.set $__struct_ptr")
-                self.emit(f"loop {loop_lbl}")
-                for b in stmt.body:
-                    self.gen_stmt(b)
-                self.emit("local.get $__struct_ptr")
-                self.emit("i32.const 1")
-                self.emit("i32.sub")
-                self.emit("local.tee $__struct_ptr")
-                self.emit(f"br_if {loop_lbl}")
-                self.emit("end")
+            self.gen_expr(stmt.count)
+            self.emit("local.set $__struct_ptr")
+            self.emit(f"loop {loop_lbl}")
+            for b in stmt.body:
+                self.gen_stmt(b)
+            self.emit("local.get $__struct_ptr")
+            self.emit("i32.const 1")
+            self.emit("i32.sub")
+            self.emit("local.tee $__struct_ptr")
+            self.emit(f"br_if {loop_lbl}")
+            self.emit("end")
 
             if stmt.cond is not None:
                 self.emit(f"loop {loop_lbl}")

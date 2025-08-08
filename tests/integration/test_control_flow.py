@@ -6,7 +6,7 @@ cases = [
     void main() {
         int g = 0;
         for (; g < 0; g = g + 1) { }
-        print(g);
+        write_int(g);
     }
     """, ["0"]),
 
@@ -16,7 +16,7 @@ cases = [
         for (int i = 0; i < 4; i = i + 1) {
             cnt = cnt + 1;
         }
-        print(cnt);
+        write_int(cnt);
     }
     """, ["4"]),
 
@@ -26,7 +26,7 @@ cases = [
         for (int i = 0; i < 6; i = i + 2) {
             s = s + i;
         }
-        print(s);
+        write_int(s);
     }
     """, ["6"]),
 
@@ -36,7 +36,7 @@ cases = [
         for (; f < 3; ) {
             f = f + 1;
         }
-        print(f);
+        write_int(f);
     }
     """, ["3"]),
 
@@ -46,7 +46,7 @@ cases = [
         for (; d < 3; d = d + 1) {
             break;
         }
-        print(d);
+        write_int(d);
     }
     """, ["0"]),
 
@@ -58,7 +58,7 @@ cases = [
                 sum = sum + 1;
             }
         }
-        print(sum);
+        write_int(sum);
     }
     """, ["25"]),
 
@@ -71,7 +71,7 @@ cases = [
             }
             sum = sum + 1;
         }
-        print(sum);
+        write_int(sum);
     }
     """, ["5"]),
 
@@ -84,7 +84,7 @@ cases = [
             }
             sum = sum + i;
         }
-        print(sum);
+        write_int(sum);
     }
     """, ["20"]),
 
@@ -96,7 +96,7 @@ cases = [
         } else {
             sum = -1;
         }
-        print(sum);
+        write_int(sum);
     }
     """, ["0"]),
 
@@ -107,14 +107,14 @@ cases = [
         } else {
             sum = -1;
         }
-        print(sum);
+        write_int(sum);
     }
     """, ["-1"]),
 
     ("""
     void main() {
         for (;true;) {break;}
-        print(1);
+        write_int(1);
      
     }
      """, ["1"]),
@@ -126,7 +126,7 @@ cases = [
         while (sum != 5) {
             sum = sum + 1;
         }
-        print(sum);
+        write_int(sum);
      }
 
 """, ["5"]),
@@ -137,7 +137,7 @@ cases = [
         while (true) {
             break;
         }
-        print(1);
+        write_int(1);
      }
 
 """, ["1"]),
@@ -150,7 +150,7 @@ void main() {
         if (sum % 2 != 0) {
             continue;
         }
-        print(sum);
+        write_int(sum);
     }
 }
 
@@ -162,7 +162,7 @@ void main() {
     until (sum >= 5) {
         sum = sum + 1;
     }
- print(sum);
+ write_int(sum);
 }
 
 """, ["5"]),
@@ -172,7 +172,7 @@ void main() {
     until (false) {
         break;
     }
- print(-6);
+ write_int(-6);
 }
 
 """, ["-6"]),
@@ -182,7 +182,7 @@ void main() {
     until (false) {
         break;
     }
- print(-6);
+ write_int(-6);
 }
 
 """, ["-6"]),
@@ -192,9 +192,9 @@ void main() {
     until (false) {
         break;
     } else {
-    print(1);
+    write_int(1);
  }
- print(8);
+ write_int(8);
 }
 
 """, ["8"]),
@@ -206,9 +206,9 @@ void main() {
     until (x == 2) {
         x = x + 1; 
     } else {
-    print(4);
+    write_int(4);
  }
- print(5);
+ write_int(5);
 }
 
 """, ["4", "5"]),
@@ -224,7 +224,7 @@ void main() {
         }
         sum = sum + x;
     }
- print(sum);
+ write_int(sum);
 }
 
 """, ["25"]),
@@ -233,9 +233,9 @@ void main() {
 ("""
 void main() {
     do {
-    print(1);
+    write_int(1);
     }
-    print(2);
+    write_int(2);
 }
 
 """, ["1", "2"]),
@@ -244,11 +244,11 @@ void main() {
 ("""
 void main() {
     do {
-        print(1);
+        write_int(1);
     } else {
-        print(3);
+        write_int(3);
     }
-    print(2);
+    write_int(2);
 }
 
 """, ["1", "3", "2"]),
@@ -257,15 +257,48 @@ void main() {
 ("""
 void main() {
     do {
-        print(1);
+        write_int(1);
         break;
     } else {
-        print(3);
+        write_int(3);
     }
-    print(2);
+    write_int(2);
 }
 
 """, ["1", "2"]),
+
+("""
+void main() {
+    int i = 0;
+    do 0 {
+        i = i + 1;
+    }
+    write_int(i);
+}
+
+""", ["0"]),
+
+("""
+void main() {
+    int i = 0;
+    do 1 {
+        i = i + 1;
+    }
+    write_int(i);
+}
+
+""", ["1"]),
+
+("""
+void main() {
+    int i = 0;
+    do 3 {
+        i = i + 1;
+    }
+    write_int(i);
+}
+
+""", ["3"]),
 
 ]
 

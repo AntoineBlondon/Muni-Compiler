@@ -32,7 +32,7 @@ def run_muni(src: str) -> list[str]:
         wasm_path = os.path.join(d, "out.wasm")
         # write the source
         with open(src_path, "w") as f:
-            f.write("import env.print(int) -> void;" + textwrap.dedent(src))
+            f.write(textwrap.dedent(src))
         
         compile_muni(src_path, wasm_path)
 

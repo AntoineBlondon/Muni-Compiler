@@ -5,6 +5,7 @@ importer.py
 Handles standard library imports and inlining of file-based imports
 for the muni compiler pipeline.
 """
+from importlib.resources import files, as_file
 import sys
 from pathlib import Path
 from typing import Optional, Set
@@ -46,7 +47,7 @@ def inline_file_imports(
             child_ast = Parser(tokens).parse()
 
             # Inline the child's imports
-            child_ast = inline_file_imports(child_ast, import_path.parent, seen)
+            child_ast = inline_file_imports(child_ast, import_path.parent, seen) #type: ignore
 
             # Splice in the child's top-level declarations
             new_decls.extend(child_ast.decls)
@@ -57,34 +58,25 @@ def inline_file_imports(
     return ast
 
 
-def import_standard_files(
-    ast: Program,
-    compiler_dir: Path,
-    std_dir: Optional[Path] = None
-) -> Program:
+def import_standard_lib(ast: Program) -> Program:
     """
-    Load and inline all .mun files from the standard library directory.
-
-    - If std_dir is None, defaults to compiler_dir / 'std'.
-    - Each std file is parsed, its file-imports are inlined,
-      and its declarations are appended to the AST.
+    Load and inline std.mun from the standard-library 'lib' directory.
     """
-    if std_dir is None:
-        std_dir = (compiler_dir / "std").resolve()
-    else:
-        std_dir = std_dir.resolve()
+    with as_file(files("muni2wasm").joinpath("lib")) as lib_dir:
+        std_path = lib_dir / "std.mun"
+        if not std_path.is_file():
+            print(std_path)
+            return ast
 
-    if not std_dir.is_dir():
-        return ast
+        # read & parse std.mun
+        src = std_path.read_text(encoding="utf-8")
+        tokens = tokenize(src)
+        child_ast = Parser(tokens).parse()
 
-    for path in sorted(std_dir.iterdir()):
-        if path.suffix == ".mun" and path.is_file():
-            src = path.read_text(encoding="utf-8")
-            tokens = tokenize(src)
-            child_ast = Parser(tokens).parse()
-            # Inline any file-based imports within the std file
-            child_ast = inline_file_imports(child_ast, path.parent)
-            # Append std declarations
-            ast.decls.extend(child_ast.decls)
+        # inline any file-imports inside std.mun
+        child_ast = inline_file_imports(child_ast, std_path.parent) # type: ignore
+
+        # append its decls
+        ast.decls.extend(child_ast.decls)
 
     return ast

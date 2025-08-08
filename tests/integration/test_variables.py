@@ -10,15 +10,15 @@ cases = [
 void main() {
 
     int a = 1;     
-    print(a);
+    write_int(a);
     int b = a;
-    print(b);
+    write_int(b);
     int c = a + b;
-    print(c);
+    write_int(c);
     b = 5;
-    print(b);
+    write_int(b);
     a = b * 2;
-    print(a);
+    write_int(a);
      
      
 }
@@ -28,9 +28,9 @@ void main() {
 void main()
 {
     boolean flag = true;
-    if (flag) { print(1); } else { print(0); }
+    if (flag) { write_int(1); } else { write_int(0); }
     flag = false;
-    if (flag) { print(1); } else { print(0); }
+    if (flag) { write_int(1); } else { write_int(0); }
      
 }
 """,  ["1", "0"]),
@@ -38,13 +38,13 @@ void main()
 void main()
 {
     int x = 0;
-    print(x);
+    write_int(x);
     x = x + 1;
-    print(x);
+    write_int(x);
     int y = x + 10;
-    print(y);
+    write_int(y);
     y = y - 5;
-    print(y);
+    write_int(y);
 }
 
 """,  ["0", "1", "11", "6"]),
@@ -56,21 +56,21 @@ void main()
     int y = 6;
     boolean cmp = a > b;
     if (cmp) {
-        print(1);
+        write_int(1);
      } else {
-        print(0);
+        write_int(0);
      }
     boolean cmp2 = y == 6;
     if (cmp2) {
-        print(1);
+        write_int(1);
      } else {
-        print(0);
+        write_int(0);
      }
     boolean cmp3 = y != 6;
     if (cmp3) {
-        print(1);
+        write_int(1);
      } else {
-        print(0);
+        write_int(0);
      }
 }
 
@@ -81,7 +81,7 @@ void main()
 {
     int a = 10;
     int a2 = -a;
-    print(a2);
+    write_int(a2);
 }
 """, ["-10"]),
     ("""
@@ -89,7 +89,7 @@ void main()
 {
     boolean cmp = true;
     boolean notcmp = !cmp;
-    if (notcmp) { print(1); } else { print(0); }
+    if (notcmp) { write_int(1); } else { write_int(0); }
 }
 """, ["0"]),
     ("""
@@ -98,20 +98,20 @@ void main()
     boolean flag = true;
     int a = 10;
     int c = 2;
-    print(c % 3);
+    write_int(c % 3);
     c = c * 2 + c % 3;
-    print(c);
+    write_int(c);
     boolean b = (a > c) && flag;
-    if (b) { print(1); } else { print(0); }
+    if (b) { write_int(1); } else { write_int(0); }
 }
 """, ["2", "6", "1"]),
     ("""
 void main()
 {
      int nm = -5 % 3;
-     print(nm);
+     write_int(nm);
      int negmod = -(5 % 3);
-     print(nm);
+     write_int(nm);
 }
 
 """, ["-2", "-2"]),

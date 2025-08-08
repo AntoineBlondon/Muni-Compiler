@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "muni2wasm"
+version = "0.1.2"
+description = "Muni compiler frontend targeting WebAssembly"
+readme = "README.md"
+authors = [{ name="Azure Blondon", email="azure.blondon@gmail.com" }]
+requires-python = ">=3.7"
+dependencies = [
+    "wasmtime>=35.0.0",
+    "typer>=0.12.3",
+    "wabt>=0.1.2"
+]
+
+[project.scripts]
+muni2wasm = "muni2wasm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["muni2wasm", "muni2wasm.*"]
+
+[tool.setuptools.package-data]
+"muni2wasm" = ["lib/*.mun"]

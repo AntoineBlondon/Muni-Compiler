@@ -24,10 +24,6 @@ def compile_cmd(
         ..., writable=True, file_okay=True, dir_okay=False,
         help="Destination path (must end with .wat or .wasm)"
     ),
-    std_dir: Path = typer.Option(
-        Path("std"), exists=False, file_okay=False, dir_okay=True,
-        help="Path to the standard library directory (defaults to 'std' relative to CWD)"
-    ),
     debug: bool = typer.Option(
         False, "--debug", "-d",
         help="Enable debug logging and full tracebacks"
@@ -46,8 +42,7 @@ def compile_cmd(
     try:
         compile_file(
             str(input_file),
-            str(output_file),
-            std_dir=str(std_dir)
+            str(output_file)
         )
     except Exception as e:
         if debug:

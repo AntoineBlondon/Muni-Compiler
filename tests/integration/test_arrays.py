@@ -10,10 +10,10 @@ void main() {
     x.set(0, 1);
     x.set(1, 2);
     x.set(2, 3);
-    print(x.get(0));
-    print(x.get(1));
-    print(x.get(2));
-    print(x.length);
+    write_int(x.get(0));
+    write_int(x.get(1));
+    write_int(x.get(2));
+    write_int(x.length);
 }
 """, ["1", "2", "3", "3"]),
     
@@ -21,10 +21,10 @@ void main() {
 ("""
 void main() {
     array<int> x = [4, 5, 6, 7];
-    print(x.length);
-    print(x.get(0));
-    print(x.get(1));
-    print(x.get(2));
+    write_int(x.length);
+    write_int(x.get(0));
+    write_int(x.get(1));
+    write_int(x.get(2));
 }
 """, ["4", "4", "5", "6"]),
     
