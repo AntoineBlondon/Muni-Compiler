@@ -29,8 +29,8 @@ def compile_to_wat(source: str) -> str:
     tokens = tokenize(source)
     ast = Parser(tokens).parse()
 
-    ast = import_standard_lib(ast)  # type: ignore
-    ast = inline_file_imports(ast, Path(source).parent)
+    ast, lib_seen = import_standard_lib(ast)  # type: ignore
+    ast, _ = inline_file_imports(ast, Path(source).parent, lib_seen)
 
     SemanticChecker(ast).check()
     return CodeGen(ast).gen()

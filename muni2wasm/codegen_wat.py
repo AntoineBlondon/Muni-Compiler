@@ -106,10 +106,6 @@ class CodeGen:
             if ctor:
                 self.gen_method(sd.name, ctor, type_args=[])
 
-            # 2) any other static helpers (append, set, #print…)
-            for m in sd.methods:
-                if m.is_static and m.name != sd.name:
-                    self.gen_method(sd.name, m, type_args=[])
 
         # 6) emit all free, non-generic functions
         for fd in self.program.decls:

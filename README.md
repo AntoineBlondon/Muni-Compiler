@@ -125,7 +125,11 @@ null
 import <vector.mun>;
 ```
 
-2. Library imports (coming soon)
+2. Library imports (inlines a library file)
+
+```muni
+import <math.lib>; # imports the math.mun lib
+```
 
 
 3. Host imports (declare a host function available at runtime):
