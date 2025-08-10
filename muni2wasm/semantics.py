@@ -627,6 +627,7 @@ class SemanticChecker:
                     or (lt == TypeExpr("*") and not rt in (TypeExpr("boolean"), TypeExpr("int"))) \
                     or (rt == TypeExpr("*") and not lt in (TypeExpr("boolean"), TypeExpr("int"))):
                     return TypeExpr("boolean")
+                raise SemanticError(f"Binary operator '{expr.op}' expects same types, got {lt} and {rt}", pos)
             elif lt != rt:
                 raise SemanticError(f"Binary operator '{expr.op}' expects same types, got {lt} and {rt}", pos)
             elif expr.op in ("+", "-", "*", "/", "%"):
@@ -693,7 +694,7 @@ class SemanticChecker:
             self.instantiate_struct(receiver_type.name, receiver_type.params)
 
             type_params, struct_decl = self.struct_templates[receiver_type.name]
-            method = next((m for m in struct_decl.methods if not m.is_static and m.name == expr.method), None)
+            method = next((m for m in struct_decl.methods if m.name == expr.method), None)
             if method is None:
                 raise SemanticError(f"No method '{expr.method}' in structure '{receiver_type.name}'", pos)
             if method.is_static:
@@ -723,31 +724,40 @@ class SemanticChecker:
         # Constructor call
         if isinstance(expr, FunctionCall) and expr.name in self.struct_templates:
             tparams, struct_decl = self.struct_templates[expr.name]
-            if len(expr.type_args) != len(tparams):
+
+            # Remap call-site type args through current substitutions
+            # (method_subst/substitution_map + struct_subst/struct_templates_params)
+            remap = {**substitution_map, **struct_templates_params}
+            type_args = [self.subst(self.resolve_alias(t), remap) for t in expr.type_args]
+
+            if len(type_args) != len(tparams):
                 raise SemanticError(
-                    f"Constructor '{expr.name}' expects {len(tparams)} type-arg(s), got {len(expr.type_args)}",
+                    f"Constructor '{expr.name}' expects {len(tparams)} type-arg(s), got {len(type_args)}",
                     pos
                 )
 
-            self.instantiate_struct(expr.name, expr.type_args)
+            # Use the remapped concrete args from here on
+            self.instantiate_struct(expr.name, type_args)
 
-            ctor = next((m for m in struct_decl.methods if m.is_static and m.name == expr.name), None)
+            ctor = next((m for m in struct_decl.methods
+                        if m.is_static and m.name == expr.name), None)
             if ctor is None:
                 raise SemanticError(f"No constructor for '{expr.name}'", pos)
-            
-            ctor_sub_map = dict(zip(tparams, expr.type_args))
 
-            for arg, (param_name, param_type) in zip(expr.args, ctor.params):
-                arg_type = self.infer(arg, symbol_table, substitution_map, struct_templates_params)
+            struct_sub_map = dict(zip(tparams, type_args))
 
-                expected_type = self.subst(self.subst(param_type, ctor_sub_map), substitution_map)
-                if arg_type != expected_type:
+            for arg, (pname, ptype) in zip(expr.args, ctor.params):
+                arg_t = self.infer(arg, symbol_table, substitution_map, struct_templates_params)
+                # Apply both maps to BOTH sides
+                arg_t = self.subst(arg_t, {**substitution_map, **struct_sub_map})
+                exp_t = self.subst(ptype, {**substitution_map, **struct_sub_map})
+                if arg_t != exp_t:
                     raise SemanticError(
-                        f"In constructor '{expr.name}()', field '{param_name}' expects {expected_type}, got {arg_type}",
+                        f"In constructor '{expr.name}()', field '{pname}' expects {exp_t}, got {arg_t}",
                         arg.pos
                     )
 
-            return TypeExpr(expr.name, expr.type_args)
+            return TypeExpr(expr.name, type_args)
 
         if isinstance(expr, FunctionCall):
             
@@ -793,17 +803,17 @@ class SemanticChecker:
             return self.subst(rtype, dict(zip(tparams, expr.type_args)))
 
         if isinstance(expr, MemberAccess):
-            receiver_type = self.infer(expr.obj, symbol_table, substitution_map, struct_templates_params)
 
             # static field
-            if isinstance(expr.obj, Ident) and receiver_type.name in struct_templates_params:
-                _, struct_decl = self.struct_templates[receiver_type.name]
+            if isinstance(expr.obj, Ident) and expr.obj.name in self.struct_templates:
+                _, struct_decl = self.struct_templates[expr.obj.name]
                 static_field = next((f for f in struct_decl.static_fields if f.name == expr.field), None)
                 if static_field is not None:
-                    expr.struct = TypeExpr(receiver_type.name, []) # type: ignore
+                    expr.struct = TypeExpr(expr.obj.name, []) # type: ignore
                     expr.is_static_field = True #type: ignore
                     return static_field.type
             
+            receiver_type = self.infer(expr.obj, symbol_table, substitution_map, struct_templates_params)
             # instance field
             if receiver_type.name not in self.struct_templates:
                 raise SemanticError(f"Cannot access field on non-structure '{receiver_type}'", pos)

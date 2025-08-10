@@ -79,6 +79,11 @@ def string_to_pointer(mem: Memory, store, text: str) -> int:
 
     return vec_ptr
 
+def trap_oob(index, length, line, col):
+    raise RuntimeError(f"array index {index} out of bounds (length {length}) at {line}:{col}")
+
+def trap_div0(line, col):
+    raise RuntimeError(f"division by zero at {line}:{col}")
 
 
 def register_host_functions(linker, store) -> Dict[str, Optional[Memory]]:
@@ -112,5 +117,7 @@ def register_host_functions(linker, store) -> Dict[str, Optional[Memory]]:
     linker.define_func("env", "write_int", FuncType([ValType.i32()], []), wasi_write_int)
     linker.define_func("env", "write_chr", FuncType([ValType.i32()], []), wasi_write_chr)
     linker.define_func("env", "input", FuncType([], [ValType.i32()]), wasi_input)
+    linker.define_func("muni", "trap_oob", FuncType([ValType.i32(), ValType.i32(), ValType.i32(), ValType.i32()], []), trap_oob)
+    linker.define_func("muni", "trap_div0", FuncType([ValType.i32(), ValType.i32()], []), trap_div0)
 
     return memory_ref

@@ -51,9 +51,7 @@ class Parser:
             if self.peek() == "IMPORT_KW":
                 decls.append(self.parse_import_declaration())
                 continue
-            elif ((self.peek() in ("VOID_KW","INT_KW","BOOL_KW") or self.peek()=="IDENT")
-                    and self.tokens[self.pos+1].kind=="IDENT"
-                    and self.tokens[self.pos+2].kind in ("LT","LPAREN")):
+            elif self._looks_like_function_decl():
                 decls.append(self.parse_function_declaration())
             elif self.peek() == "ALIAS_KW":
                 decls.append(self.parse_alias_declaration())
@@ -120,7 +118,7 @@ class Parser:
         is_local_decl = False
         if kind in ("INT_KW","BOOL_KW","VOID_KW"):
             is_local_decl = True
-        elif kind in ("IDENT", "ARRAY_KW"):
+        elif kind in ("IDENT"):
             # simple: IDENT name = …
             if (self.tokens[self.pos+1].kind == "IDENT" and
                 self.tokens[self.pos+2].kind == "ASSIGN"):
@@ -325,7 +323,7 @@ class Parser:
                     continue
 
             # --- normal instance field:  <type> <name>; ---
-            if self.peek() in ("INT_KW","BOOL_KW","IDENT", "ARRAY_KW"):
+            if self.peek() in ("INT_KW","BOOL_KW","IDENT"):
                 # look‐ahead past any generic args to see if we really have
                 #   <type> <name> ;
                 j = self.pos + 1
@@ -419,48 +417,67 @@ class Parser:
 
 
     def parse_function_declaration(self):
-        # return type: VOID_KW|INT_KW|BOOL_KW|IDENT
+        # --- speculative lookahead so we only commit if this truly is a function decl ---
+        start_pos = self.pos
         first_tok = self.peek_token()
+        try:
+            # try to parse a return type (handles IDENT<...> too)
+            self.parse_type_expr()
+            # must have a function name next
+            if self.peek() != "IDENT":
+                raise SyntaxError(f"{first_tok.line}:{first_tok.col}: expected function name after return type")
+            # and then either generic type params "<...>" or a parameter list "("
+            if self.pos + 1 >= len(self.tokens):
+                raise SyntaxError(f"{first_tok.line}:{first_tok.col}: unexpected EOF after function name")
+            nxt = self.tokens[self.pos + 1].kind
+            if nxt not in ("LT", "LPAREN"):
+                raise SyntaxError(f"{first_tok.line}:{first_tok.col}: expected '<' or '(' after function name")
+        finally:
+            # reset so we can actually parse and build the AST nodes
+            self.pos = start_pos
+
+        # --- real parse begins here ---
         return_type = self.parse_type_expr()
 
         name_tok = self.expect("IDENT")
         function_name = name_tok.text
 
-        type_params = []
+        # optional generic type parameters on the function itself: foo<T,U>(...)
+        type_params: list[str] = []
         if self.peek() == "LT":
             self.next()  # consume '<'
             while True:
-                tok = self.expect("IDENT")
-                type_params.append(tok.text)
-                if self.peek()=="COMMA":
-                    self.next()
-                    continue
+                type_params.append(self.expect("IDENT").text)
+                if self.peek() == "COMMA":
+                    self.next(); continue
                 break
             self.expect("GT")
 
-        # params
+        # parameters
         self.expect("LPAREN")
         params = []
         if self.peek() != "RPAREN":
             while True:
-                parameter_type = self.parse_type_expr()
-                parameter_name = self.expect("IDENT").text
-                params.append((parameter_name, parameter_type))
-                if self.peek()=="COMMA":
+                pty = self.parse_type_expr()
+                pname = self.expect("IDENT").text
+                params.append((pname, pty))
+                if self.peek() == "COMMA":
                     self.next(); continue
                 break
         self.expect("RPAREN")
 
         # body
         self.expect("LBRACE")
-        body=[]
-        while self.peek()!="RBRACE":
+        body = []
+        while self.peek() != "RBRACE":
             body.append(self.parse_stmt())
         self.expect("RBRACE")
 
         return self.ast.FunctionDeclaration(
-            function_name, type_params, params, return_type, body, pos=(first_tok.line, first_tok.col)
+            function_name, type_params, params, return_type, body,
+            pos=(first_tok.line, first_tok.col)
         )
+
 
 
 
@@ -714,7 +731,7 @@ class Parser:
             return self.ast.StringLiteral(text, pos=(line,col))
 
         # identifier or function‐call
-        if kind in ("IDENT", "ARRAY_KW"):
+        if kind in ("IDENT"):
             name = text
             self.next()
             # call‐lookahead
@@ -808,7 +825,7 @@ class Parser:
                 self.next()  # consume '.'
                 name = self.expect("IDENT").text
                 type_args = []
-                if self.peek() == "LT" and self._looks_like_method_generic():
+                if self.peek() == "LT" and self._looks_like_generic():
                     self.next()
                     while True:
                         try: 
@@ -855,12 +872,6 @@ class Parser:
         raise SyntaxError(f"{line}:{col}: Unexpected token in primary: {kind}")
 
     def parse_type_expr(self):
-        if self.peek() == "ARRAY_KW":
-            self.next()            # consume `array`
-            self.expect("LT")
-            elt_ty = self.parse_type_expr()
-            self.expect("GT")
-            return self.ast.TypeExpr("array", [elt_ty])
 
         if self.peek() in ["INT_KW", "VOID_KW", "BOOL_KW"]:
             name = {"INT_KW": "int", "VOID_KW": "void", "BOOL_KW": "boolean"}[self.next().kind]
@@ -900,7 +911,7 @@ class Parser:
             self.tokens[i+2].kind == "IDENT" and
             self.tokens[i+3].kind == "LPAREN"
         )
-    def _looks_like_method_generic(self):
+    def _looks_like_generic(self):
         # starting at a '<', scan forward to its matching '>'
         depth = 0
         for i in range(self.pos, len(self.tokens)):
@@ -913,3 +924,25 @@ class Parser:
                     return i + 1 < len(self.tokens) and \
                            self.tokens[i+1].kind == "LPAREN"
         return False
+
+
+    def _looks_like_function_decl(self) -> bool:
+        save = self.pos
+        try:
+            # Must be able to parse a type expression at the start
+            if self.peek() not in ("VOID_KW", "INT_KW", "BOOL_KW", "IDENT"):
+                return False
+
+            self.parse_type_expr()             # consume the return type (handles nested <...>)
+            if self.peek() != "IDENT":         # must have function name
+                return False
+
+            # look one past the name: either '<' (generic TPs) or '(' (params)
+            if self.pos + 1 >= len(self.tokens):
+                return False
+            nxt = self.tokens[self.pos + 1].kind
+            return nxt in ("LT", "LPAREN")
+        except Exception:
+            return False
+        finally:
+            self.pos = save

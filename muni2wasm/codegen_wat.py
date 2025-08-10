@@ -43,6 +43,8 @@ class CodeGen:
         # same for free generic functions
         self.fn_insts: dict[tuple[str,tuple[str,...]], bool] = {}
 
+        self._tv_map: dict[str, TypeExpr] = {}
+
     def _fresh_label(self, base: str) -> str:
         lbl = f"${base}_{self._label_count}"
         self._label_count += 1
@@ -63,6 +65,8 @@ class CodeGen:
 
         # 2) memory + malloc
         self.out.extend([
+            '  (import "muni" "trap_oob" (func $trap_oob (param i32 i32 i32 i32)))',
+            '  (import "muni" "trap_div0" (func $trap_div0 (param i32 i32)))',
             "  (memory $mem 1)",
             "  (global $heap (mut i32) (i32.const 4))",
             "  (func $malloc (param $n i32) (result i32)",
@@ -97,14 +101,6 @@ class CodeGen:
                     self.out.append(
                         f'  (global ${d.name}_{sf.name} i32 (i32.const {val}))'
                     )
-        for sd in self.program.decls:
-            if not isinstance(sd, StructureDeclaration):
-                continue
-
-            # 1) the “template” ctor: list<T>(…) → $list_list
-            ctor = next((m for m in sd.methods if m.is_static and m.name == sd.name), None)
-            if ctor:
-                self.gen_method(sd.name, ctor, type_args=[])
 
 
         # 6) emit all free, non-generic functions
@@ -202,7 +198,10 @@ class CodeGen:
             params.append(f"(param ${pname} i32)")
 
         # return signature
-        result_decl = "" if m.return_type == TypeExpr("void") else "(result i32)"
+        if is_constructor:
+            result_decl = "(result i32)"
+        else:
+            result_decl = "" if m.return_type == TypeExpr("void") else "(result i32)"
 
         # recursively collect locals (including those in for-init)
         self.locals = ["__struct_ptr", "__lit"]
@@ -517,6 +516,14 @@ class CodeGen:
             self.emit(f"block {br_lbl}")
             self.gen_expr(stmt.count)
             self.emit("local.set $__struct_ptr")
+
+            # if count is negative or nil, skip loop
+            self.emit("local.get $__struct_ptr")
+            self.emit("i32.const 0")
+            self.emit("i32.le_s")
+            self.emit(f"br_if {br_lbl}")
+            
+            
             self.emit(f"loop {loop_lbl}")
             for b in stmt.body:
                 self.gen_stmt(b)
@@ -567,39 +574,36 @@ class CodeGen:
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
         elif isinstance(expr, ArrayLiteral):
-            # --- reuse the runtime constructor for us ---
             if not expr.elements:
-                # empty array → null pointer
                 self.emit("i32.const 0")
                 return
 
-            # assume int‐elements for now; extend size_of if you need other T
-            elt_ty = TypeExpr("T")
+            elt_ty = TypeExpr("T")  
             n = len(expr.elements)
 
-            # 1) call array<T>(n)
+            # 1) array<T>(n)
             ctor_call = FunctionCall("array", [elt_ty], [Number(str(n))], pos=expr.pos)
             self.gen_expr(ctor_call)
-            # stash the returned ptr
-            self.emit("local.set $__lit")
 
-            # 2) populate each slot: x.set(i, value)
+            # store pointer in $__struct_ptr  (NOT $__lit)
+            self.emit("local.set $__struct_ptr")
+
+            # 2) populate: $__struct_ptr.set(i, value)
             for i, elt in enumerate(expr.elements):
-
-                # build an AST node for: $__lit.set(i, elt)
                 set_call = MethodCall(
-                   Ident("__lit", pos=expr.pos),   # receiver
-                   [],                              # no type‐args
-                   "set",                           # method name
-                   [ Number(str(i), pos=expr.pos), elt ],
-                   struct=TypeExpr("array", [elt_ty]),
-                   pos=expr.pos
+                    Ident("__struct_ptr", pos=expr.pos),
+                    [],
+                    "set",
+                    [ Number(str(i), pos=expr.pos), elt ],
+                    struct=TypeExpr("array", [elt_ty]),
+                    pos=expr.pos
                 )
-                self.gen_expr(set_call)          # this will inline your intrinsic .set
+                self.gen_expr(set_call)
 
-            # finally leave the array ptr on the stack
-            self.emit("local.get $__lit")
+            # 3) leave the pointer on the stack
+            self.emit("local.get $__struct_ptr")
             return
+
         elif isinstance(expr, CharLiteral):
             # Convert char to its ASCII value
             ascii_value = ord(expr.value)
@@ -643,6 +647,33 @@ class CodeGen:
                 self.gen_expr(expr.expr)
                 self.emit("i32.sub")
         elif isinstance(expr, BinOp):
+            if expr.op in ("/", "%"):
+                # evaluate right into $__lit, left into $__struct_ptr (reuse temps)
+                self.gen_expr(expr.right)
+                self.emit("local.set $__lit")          # rhs
+                self.gen_expr(expr.left)
+                self.emit("local.set $__struct_ptr")   # lhs
+
+                line = expr.pos[0] if getattr(expr, "pos", None) else 0 # type: ignore
+                col  = expr.pos[1] if getattr(expr, "pos", None) else 0 # type: ignore
+
+                # if (rhs == 0) trap_div0(line, col)
+                self.emit("local.get $__lit")
+                self.emit("i32.const 0")
+                self.emit("i32.eq")
+                self.emit("if")
+                self.emit(f"  i32.const {line}")
+                self.emit(f"  i32.const {col}")
+                self.emit("  call $trap_div0")
+                self.emit("  unreachable")
+                self.emit("end")
+
+                # perform op: lhs (now) / rhs
+                self.emit("local.get $__struct_ptr")
+                self.emit("local.get $__lit")
+                self.emit("i32.div_s" if expr.op == "/" else "i32.rem_s")
+                return
+
             self.gen_expr(expr.left)
             self.gen_expr(expr.right)
             opmap = {
@@ -651,7 +682,7 @@ class CodeGen:
                 "<":  "i32.lt_s", "<=": "i32.le_s",
                 ">":  "i32.gt_s", ">=": "i32.ge_s",
                 "+":  "i32.add", "-":  "i32.sub",
-                "*":  "i32.mul", "/":  "i32.div_s", "%": "i32.rem_s",
+                "*":  "i32.mul",
             }
             self.emit(opmap[expr.op])
         # static‐field access (math.pi → global.get $math_pi)
@@ -689,24 +720,104 @@ class CodeGen:
         elif isinstance(expr, MethodCall) and expr.struct.name == "array": # type: ignore
             # array.get(idx)
             if expr.method == "get":
-                self.gen_expr(expr.receiver)        # arr_ptr
-                self.emit("i32.load offset=4")     # buf_ptr
-                self.gen_expr(expr.args[0])        # idx
+                self.gen_expr(expr.receiver)
+                self.emit("local.set $__struct_ptr")
+
+                self.gen_expr(expr.args[0])       # idx
+                self.emit("local.set $__lit")
+
+                # if (idx < 0) trap_oob(idx, len, line, col)
+                line = expr.pos[0] if getattr(expr, "pos", None) else 0 # type: ignore
+                col  = expr.pos[1] if getattr(expr, "pos", None) else 0 # type: ignore
+
+                self.emit("local.get $__lit")
+                self.emit("i32.const 0")
+                self.emit("i32.lt_s")
+                self.emit("if")
+                self.emit("  local.get $__lit")
+                self.emit("  local.get $__struct_ptr")
+                self.emit("  i32.load offset=0")      # length
+                self.emit(f"  i32.const {line}")
+                self.emit(f"  i32.const {col}")
+                self.emit("  call $trap_oob")
+                self.emit("  unreachable")
+                self.emit("end")
+
+                # if (idx >= len) trap_oob(idx, len, line, col)
+                self.emit("local.get $__lit")
+                self.emit("local.get $__struct_ptr")
+                self.emit("i32.load offset=0")
+                self.emit("i32.ge_s")
+                self.emit("if")
+                self.emit("  local.get $__lit")
+                self.emit("  local.get $__struct_ptr")
+                self.emit("  i32.load offset=0")
+                self.emit(f"  i32.const {line}")
+                self.emit(f"  i32.const {col}")
+                self.emit("  call $trap_oob")
+                self.emit("  unreachable")
+                self.emit("end")
+
+                # proceed with load...
+                self.emit("local.get $__struct_ptr")
+                self.emit("i32.load offset=4")
+                self.emit("local.get $__lit")
                 self.emit("i32.const 4")
                 self.emit("i32.mul")
                 self.emit("i32.add")
                 self.emit("i32.load")
                 return
 
-            # array.set(idx, val)
             if expr.method == "set":
+                # arr_ptr -> $__struct_ptr
                 self.gen_expr(expr.receiver)
-                self.emit("i32.load offset=4")
+                self.emit("local.set $__struct_ptr")
+
+                # idx -> $__lit
                 self.gen_expr(expr.args[0])
+                self.emit("local.set $__lit")
+
+                # source position for nicer errors
+                line = expr.pos[0] if getattr(expr, "pos", None) else 0 # type: ignore
+                col  = expr.pos[1] if getattr(expr, "pos", None) else 0 # type: ignore
+
+                # if (idx < 0) trap_oob(idx, len, line, col)
+                self.emit("local.get $__lit")
+                self.emit("i32.const 0")
+                self.emit("i32.lt_s")
+                self.emit("if")
+                self.emit("  local.get $__lit")                 # idx
+                self.emit("  local.get $__struct_ptr")
+                self.emit("  i32.load offset=0")                # length
+                self.emit(f"  i32.const {line}")
+                self.emit(f"  i32.const {col}")
+                self.emit("  call $trap_oob")
+                self.emit("  unreachable")
+                self.emit("end")
+
+                # if (idx >= length) trap_oob(idx, len, line, col)
+                self.emit("local.get $__lit")                   # idx
+                self.emit("local.get $__struct_ptr")
+                self.emit("i32.load offset=0")                  # length
+                self.emit("i32.ge_s")
+                self.emit("if")
+                self.emit("  local.get $__lit")                 # idx
+                self.emit("  local.get $__struct_ptr")
+                self.emit("  i32.load offset=0")                # length
+                self.emit(f"  i32.const {line}")
+                self.emit(f"  i32.const {col}")
+                self.emit("  call $trap_oob")
+                self.emit("  unreachable")
+                self.emit("end")
+
+                # safe: store value at buf_ptr + idx*4
+                self.emit("local.get $__struct_ptr")
+                self.emit("i32.load offset=4")                  # buffer
+                self.emit("local.get $__lit")                   # idx
                 self.emit("i32.const 4")
                 self.emit("i32.mul")
                 self.emit("i32.add")
-                self.gen_expr(expr.args[1])
+                self.gen_expr(expr.args[1])                     # value (evaluate only after checks)
                 self.emit("i32.store")
                 return
 
@@ -808,6 +919,23 @@ class CodeGen:
 
             # call ctor(ptr, …args)
             self.emit("local.get $__struct_ptr")
+            
+            sd = next(d for d in self.program.decls
+                    if isinstance(d, StructureDeclaration) and d.name == expr.name)
+            ctor_decl = next((m for m in sd.methods if m.is_static and m.name == expr.name), None)
+            exp_nargs = 0 if ctor_decl is None else len(ctor_decl.params)
+
+
+            # DEBUG/SANITY: make sure we have the same number of args as the ctor params
+            if len(expr.args) != exp_nargs:
+                raise RuntimeError(
+                    f"ctor call {expr.name}<{','.join(ta.name for ta in concrete_targs)}> "
+                    f"has {len(expr.args)} arg(s), expected {exp_nargs} "
+                    f"(at method {getattr(self, 'current_struct', '?')}."
+                    f"{getattr(self, 'current_method', '?')})"
+                )
+
+            # now emit args and call
             for arg in expr.args:
                 self.gen_expr(arg)
             self.emit(f"call ${mangled_ctor}")

@@ -9,7 +9,6 @@ TOKEN_SPEC = [
     (r"void\b",                 "VOID_KW"),
     (r"int\b",                  "INT_KW"),
     (r"boolean\b",              "BOOL_KW"),
-    (r"array\b",                "ARRAY_KW"),
     (r"import\b",               "IMPORT_KW"),   
     (r"structure\b",            "STRUCTURE_KW"),
     (r"static\b",               "STATIC_KW"),

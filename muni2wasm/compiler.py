@@ -21,8 +21,8 @@ from .semantics import SemanticChecker
 from .environment import register_host_functions
 from .importer import import_standard_lib, inline_file_imports
 
-# initialize WABT (downloads/upgrades binaries unless skip_update=True)
-_wabt = Wabt()
+
+_wabt = Wabt(skip_update=True)
 
 
 def compile_to_wat(source: str) -> str:
