@@ -167,7 +167,7 @@ muni2wasm run     <module.wasm>                  [--debug]
 
 * Currently uses i32 only (no floats yet).
 * `char` is an `int` under the hood; escape sequences like `'\n'` are supported.
-* Strings are `vec<char>`; printing strings typically iterates chars and calls `env.write_chr`.
+* Strings are `vec<char>`; printing strings typically iterates chars and calls `write_chr`.
 * Type aliases are expanded before type-checking; generic arity is validated.
 * Diagnostics include `file:line:col`.
 
