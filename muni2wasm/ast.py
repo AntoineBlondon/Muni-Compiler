@@ -9,6 +9,29 @@ class Program:
     def __str__(self):
         return f"Program[{', '.join(str(s) for s in self.decls)}]"
 
+class TypeExpr:
+    def __init__(self, name, params = None, pos = None):
+        if not isinstance(name, str):
+            raise TypeError(f"name must be a str, cannot be {type(name)}")
+        self.name = name
+        self.params = params or []
+        self.pos = pos
+
+    def __str__(self):
+        params = ""
+        if self.params:
+            params = f"<{', '.join(param.name for param in self.params)}>"
+        return f"{self.name}{params}"
+    
+    def __eq__(self, other):
+        return (
+            isinstance(other, TypeExpr)
+            and self.name == other.name
+            and self.params == other.params
+        )
+    def __hash__(self):
+        return hash((self.name, tuple(self.params)))
+
 
 class VariableDeclaration:
     def __init__(self, type, name, expr, pos=None):
@@ -277,7 +300,7 @@ class ImportDeclaration:
                name:   str | None = None,
                params = None,
                type_params = None,
-               return_type = None,
+               return_type: TypeExpr | None = None,
                pos=None):
       self.source      = source       # e.g. "math.mun"
       self.module      = module       # e.g. "env" or "random"
@@ -294,28 +317,6 @@ class ImportDeclaration:
   
 
 
-class TypeExpr:
-    def __init__(self, name, params = None, pos = None):
-        if not isinstance(name, str):
-            raise TypeError(f"name must be a str, cannot be {type(name)}")
-        self.name = name
-        self.params = params or []
-        self.pos = pos
-
-    def __str__(self):
-        params = ""
-        if self.params:
-            params = f"<{', '.join(param.name for param in self.params)}>"
-        return f"{self.name}{params}"
-    
-    def __eq__(self, other):
-        return (
-            isinstance(other, TypeExpr)
-            and self.name == other.name
-            and self.params == other.params
-        )
-    def __hash__(self):
-        return hash((self.name, tuple(self.params)))
 
 
 

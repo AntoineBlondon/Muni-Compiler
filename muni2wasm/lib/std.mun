@@ -76,7 +76,78 @@ structure vec<T>
         return this.data.get(this.size);
     }
 
+    boolean equals(vec<T> other)
+    {
+        if (other.size != this.size) {
+            return false;
+        }
+        for (int i = 0; i < this.size; i = i + 1) {
+            if (other.get(i) != this.get(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
 
+
+}
+
+boolean is_space(int c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+boolean is_digit(int c) {
+    return c >= '0' && c <= '9';
+}
+
+int parse_int(string s) {
+    int i = 0;
+    int n = s.size;
+    int sign = 1;
+    int value = 0;
+
+    while (i < n && is_space(s.get(i))) {
+        i = i + 1;
+    }
+
+    if (i < n && (s.get(i) == '+' || s.get(i) == '-')) {
+        if (s.get(i) == '-') { sign = -1; }
+        i = i + 1;
+    }
+
+    while (i < n && is_digit(s.get(i))) {
+        value = value * 10 + (s.get(i) - '0');
+        i = i + 1;
+    }
+
+    return sign * value;
+}
+
+
+string to_string(int x) {
+    if (x == 0) {
+        return "0";
+    }
+
+    boolean neg = x < 0;
+    int n = x;
+
+    string rev = "";
+    while (n != 0) {
+        int d = n % 10;
+        if (d < 0) { d = -d; }
+        char ch = '0' + d;
+        rev.push_back(ch);
+        n = n / 10;
+    }
+
+    string out = "";
+    if (neg) { out.push_back('-'); }
+
+    for (int i = rev.size - 1; i >= 0; i = i - 1) {
+        out.push_back(rev.get(i));
+    }
+    return out;
 }
 
 

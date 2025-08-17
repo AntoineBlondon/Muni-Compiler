@@ -100,6 +100,16 @@ class SemanticChecker:
 
             if fd.return_type != TypeExpr("void") and not self.block_returns(fd.body):
                 raise SemanticError(f"Function '{fd.name}' may exit without returning a value", fd.pos)
+        
+        for fd in self.func_decls:
+            setattr(fd, "_wasm_params", [self.wasm_ty_of(pty) for (_n, pty) in fd.params])
+            setattr(fd, "_wasm_result", self.wasm_ty_of(fd.return_type))
+        for imp in self.imports:
+            setattr(imp, "_wasm_params", [self.wasm_ty_of(t) for t in imp.params])
+            if imp.return_type is None:
+                setattr(imp, "_wasm_result", "void")
+            else:
+                setattr(imp, "_wasm_result", self.wasm_ty_of(imp.return_type))
 
     def decompose_program(self):
         self.imports = [d for d in self.program.decls if isinstance(d, ImportDeclaration)]
@@ -151,12 +161,16 @@ class SemanticChecker:
                 d.return_type = self.resolve_alias(d.return_type) # type: ignore
 
 
-        # 2) now rewrite every statement (and every expression inside) in every function & top level
+        # 2) now rewrite every statement (and every expression inside) in every function, method & top level
         for fd in self.func_decls:
             for stmt in fd.body:
                 self.rewrite_types_in_stmt(stmt)
         for stmt in self.top_stmts:
             self.rewrite_types_in_stmt(stmt)
+        for sd in self.struct_decls:
+            for m in sd.methods:
+                for stmt in m.body:
+                    self.rewrite_types_in_stmt(stmt)
 
     def rewrite_types_in_stmt(self, stmt):
         # if this is a local var decl, rewrite its declared type:
@@ -343,6 +357,7 @@ class SemanticChecker:
         for struct_name, (type_params, struct_decl) in self.struct_templates.items():
             # static fields
             for static_field in struct_decl.static_fields:
+                setattr(static_field, "_wt", self.wasm_ty_of(static_field.type))
                 if not isinstance(static_field.expr, (Number, BooleanLiteral)):
                     raise SemanticError(f"Static field '{static_field.name}' in structure '{struct_name}' must be a constant expression", static_field.pos)
                 if expr_type := self.infer(static_field.expr, {}, {}, {}) != static_field.type:
@@ -436,6 +451,7 @@ class SemanticChecker:
                         raise SemanticError(f"Missing initializer for '{stmt.name}'", pos)
                     rt = self.subst(self.infer(stmt.expr, symbol_table, method_subst, struct_subst), map_subst)
                     lhs_t = self.subst(stmt.type, map_subst)
+                    setattr(stmt, "_wt", self.wasm_ty_of(lhs_t))
                     if not (rt == lhs_t or (rt == TypeExpr("*") and lhs_t in self.structs)):
                         raise SemanticError(f"Cannot assign {rt} to {lhs_t} '{stmt.name}'", pos)
                     symbol_table[stmt.name] = lhs_t
@@ -578,9 +594,10 @@ class SemanticChecker:
     def infer(self, expr, symbol_table, substitution_map, struct_templates_params) -> TypeExpr:
         pos = getattr(expr, "pos", None)
 
-        if isinstance(expr, Number): return TypeExpr("int")
-        if isinstance(expr, BooleanLiteral): return TypeExpr("boolean")
-        if isinstance(expr, NullLiteral): return TypeExpr("*")
+        if isinstance(expr, Number): return self.mark(expr, TypeExpr("int"))
+        if isinstance(expr, BooleanLiteral): return self.mark(expr, TypeExpr("boolean"))
+        if isinstance(expr, NullLiteral): return self.mark(expr, TypeExpr("*"))
+        if isinstance(expr, CharLiteral): return self.mark(expr, TypeExpr("int"))
         if isinstance(expr, ArrayLiteral):
             if not expr.elements: return TypeExpr("*")
             array_type = self.infer(expr.elements[0], symbol_table, substitution_map, struct_templates_params)
@@ -589,10 +606,9 @@ class SemanticChecker:
                 if element_type != array_type:
                     raise SemanticError(f"Array elements must all be {array_type}, got {element_type}", pos)
             self.instantiate_struct("array", [array_type])
-            return TypeExpr("array", [array_type])
-        
-        if isinstance(expr, CharLiteral):
-            return TypeExpr("int")
+            expr.element_type = element_type  # type: ignore
+            setattr(expr, "_elem_wt", array_type)
+            return self.mark(expr, TypeExpr("array", [array_type]))
 
         if isinstance(expr, StringLiteral):
             # string is a vec<char>
@@ -600,24 +616,23 @@ class SemanticChecker:
             vec_ty  = TypeExpr("vec", [char_ty])
             # register/check vec<char>
             self.instantiate_struct("vec", [char_ty])
-            return vec_ty
+            return self.mark(expr, vec_ty)
 
-        
         if isinstance(expr, Ident):
             if expr.name not in symbol_table:
                 raise SemanticError(f"Undefined identifier: {expr.name}", pos)
-            return symbol_table[expr.name]
+            return self.mark(expr, symbol_table[expr.name])
         
         if isinstance(expr, UnaryOp):
             operand_type = self.infer(expr.expr, symbol_table, substitution_map, struct_templates_params)
             if expr.op == "!":
                 if operand_type != TypeExpr("boolean"):
                     raise SemanticError(f"Unary '!' expects boolean, got {operand_type}", pos)
-                return TypeExpr("boolean")
+                return self.mark(expr, TypeExpr("boolean"))
             if expr.op == "-":
                 if operand_type != TypeExpr("int"):
                     raise SemanticError(f"Unary '-' expects int, got {operand_type}", pos)
-                return TypeExpr("int")
+                return self.mark(expr, TypeExpr("int"))
             raise SemanticError(f"Unknown unary '{expr.op}'", pos)
         
         if isinstance(expr, BinOp):
@@ -626,22 +641,22 @@ class SemanticChecker:
                 if lt == rt \
                     or (lt == TypeExpr("*") and not rt in (TypeExpr("boolean"), TypeExpr("int"))) \
                     or (rt == TypeExpr("*") and not lt in (TypeExpr("boolean"), TypeExpr("int"))):
-                    return TypeExpr("boolean")
+                    return self.mark(expr, TypeExpr("boolean"))
                 raise SemanticError(f"Binary operator '{expr.op}' expects same types, got {lt} and {rt}", pos)
             elif lt != rt:
                 raise SemanticError(f"Binary operator '{expr.op}' expects same types, got {lt} and {rt}", pos)
             elif expr.op in ("+", "-", "*", "/", "%"):
                 if lt != TypeExpr("int"):
                     raise SemanticError(f"Binary operator '{expr.op}' expects int, got {lt}", pos)
-                return TypeExpr("int")
+                return self.mark(expr, TypeExpr("int"))
             elif expr.op in (">", "<", ">=", "<=", "==", "!="):
                 if lt != TypeExpr("int"):
                     raise SemanticError(f"Comparison operator '{expr.op}' expects int, got {lt}", pos)
-                return TypeExpr("boolean")
+                return self.mark(expr, TypeExpr("boolean"))
             elif expr.op in ("&&", "||"):
                 if lt != TypeExpr("boolean"):
                     raise SemanticError(f"Logical operator '{expr.op}' expects boolean, got {lt}", pos)
-                return TypeExpr("boolean")
+                return self.mark(expr, TypeExpr("boolean"))
             raise SemanticError(f"Unknown binary operator '{expr.op}'", pos)
 
         # static method call
@@ -680,8 +695,7 @@ class SemanticChecker:
                         arg.pos
                     )
             expr.struct = TypeExpr(type_name, struct_args) # type: ignore
-            return self.subst(method_declaration.return_type, {**method_sub_map, **struct_sub_map})
-
+            return self.mark(expr, self.subst(method_declaration.return_type, {**method_sub_map, **struct_sub_map}))
 
         # method call
         if isinstance(expr, MethodCall):
@@ -690,7 +704,10 @@ class SemanticChecker:
             expr.struct = receiver_type  # type: ignore
             if receiver_type.name not in self.struct_templates:
                 raise SemanticError(f"Cannot call method on non-structure '{receiver_type}'", pos)
-            
+
+            if receiver_type.name == "array":
+                expr.element_type = receiver_type.params[0] if receiver_type.params else None #type: ignore
+
             self.instantiate_struct(receiver_type.name, receiver_type.params)
 
             type_params, struct_decl = self.struct_templates[receiver_type.name]
@@ -719,7 +736,7 @@ class SemanticChecker:
                         f"In call to '{receiver_type.name}.{expr.method}()', field '{param_name}' expects {expected_type}, got {arg_type}",
                         arg.pos
                     )
-            return self.subst(method.return_type, {**method_sub_map, **struct_sub_map})
+            return self.mark(expr, self.subst(method.return_type, {**method_sub_map, **struct_sub_map}))
 
         # Constructor call
         if isinstance(expr, FunctionCall) and expr.name in self.struct_templates:
@@ -756,8 +773,13 @@ class SemanticChecker:
                         f"In constructor '{expr.name}()', field '{pname}' expects {exp_t}, got {arg_t}",
                         arg.pos
                     )
+            if expr.name == "array":
+                setattr(expr, "_elem_type", type_args[0] if type_args else None)
+                expr.element_type = type_args[0] if type_args else None # type: ignore
+                
 
-            return TypeExpr(expr.name, type_args)
+
+            return self.mark(expr, TypeExpr(expr.name, type_args))
 
         if isinstance(expr, FunctionCall):
             
@@ -800,7 +822,7 @@ class SemanticChecker:
                     )
 
 
-            return self.subst(rtype, dict(zip(tparams, expr.type_args)))
+            return self.mark(expr, self.subst(rtype, dict(zip(tparams, expr.type_args))))
 
         if isinstance(expr, MemberAccess):
 
@@ -811,8 +833,8 @@ class SemanticChecker:
                 if static_field is not None:
                     expr.struct = TypeExpr(expr.obj.name, []) # type: ignore
                     expr.is_static_field = True #type: ignore
-                    return static_field.type
-            
+                    return self.mark(expr, static_field.type)
+
             receiver_type = self.infer(expr.obj, symbol_table, substitution_map, struct_templates_params)
             # instance field
             if receiver_type.name not in self.struct_templates:
@@ -833,8 +855,7 @@ class SemanticChecker:
 
             result_type = self.subst(field_decl.type, mapping)
 
-            return result_type
-
+            return self.mark(expr, result_type)
 
         raise SemanticError(f"{expr} not an inferable expression", pos)
 
@@ -846,3 +867,14 @@ class SemanticChecker:
                 if self.block_returns(s.then_stmts) and self.block_returns(s.else_stmts):
                     return True
         return False
+
+        
+    def wasm_ty_of(self, t: TypeExpr) -> str:
+        if t.name in ("int", "boolean"): return "i32"
+        if t.name in ("float"):   return "f32"
+        if t.name == "void":             return "void"
+        return "i32"
+
+    def mark(self, expr, ty: TypeExpr) -> TypeExpr:
+        setattr(expr, "_wt", self.wasm_ty_of(ty))
+        return ty

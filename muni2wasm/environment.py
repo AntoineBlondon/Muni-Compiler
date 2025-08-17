@@ -85,6 +85,8 @@ def trap_oob(index, length, line, col):
 def trap_div0(line, col):
     raise RuntimeError(f"division by zero at {line}:{col}")
 
+def debug_i32(x: int) -> None:
+    print("DBG:", x)
 
 def register_host_functions(linker, store) -> Dict[str, Optional[Memory]]:
     """
@@ -119,5 +121,6 @@ def register_host_functions(linker, store) -> Dict[str, Optional[Memory]]:
     linker.define_func("env", "input", FuncType([], [ValType.i32()]), wasi_input)
     linker.define_func("muni", "trap_oob", FuncType([ValType.i32(), ValType.i32(), ValType.i32(), ValType.i32()], []), trap_oob)
     linker.define_func("muni", "trap_div0", FuncType([ValType.i32(), ValType.i32()], []), trap_div0)
+    linker.define_func("muni", "debug_i32", FuncType([ValType.i32()], []), debug_i32)
 
     return memory_ref

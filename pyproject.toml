@@ -7,8 +7,7 @@ name = "muni2wasm"
 version = "0.1.1.post0"
 description = "Muni compiler frontend targeting WebAssembly"
 readme = "README.md"
-readme-content-type = "text/markdown"
-license = { file = "LICENSE" }
+license = "MIT"
 authors = [{ name="Azure Blondon", email="azure.blondon@gmail.com" }]
 requires-python = ">=3.7"
 dependencies = [

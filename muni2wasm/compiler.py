@@ -25,6 +25,17 @@ from .importer import import_standard_lib, inline_file_imports
 _wabt = Wabt(skip_update=True)
 
 
+
+def dump_hex(mem: Memory, store: Store, start=0, length=128):
+    u8 = mem.data_ptr(store)
+    b = bytes(u8[start:start+length])
+    for off in range(0, len(b), 16):
+        row = b[off:off+16]
+        hexs = ' '.join(f'{x:02x}' for x in row)
+        print(f'{start+off:08x}: {hexs}')
+
+
+
 def compile_to_wat(source: str) -> str:
     tokens = tokenize(source)
     ast = Parser(tokens).parse()
@@ -94,6 +105,8 @@ def run_wasm(wasm_path: str) -> None:
         logging.error("Module has no valid `memory` export")
         sys.exit(1)
     memory_ref["mem"] = mem_extern
+    
+
 
     main_fn = exports.get("main")
     if main_fn is None:
