@@ -1,4 +1,3 @@
-# arithmetics.py
 import pytest
 from muni_test import run_muni, compile_error, runtime_error
 
@@ -59,6 +58,64 @@ void main() {
     write_int(-5 % 2);         # -1
     write_int(5 % -2);         # 1
 }""", ["0","-2","-2","-1","1"]),
+("""
+void main() {
+    int x = 10;
+    x += 5; # 15
+    x -= 3; # 12
+    x *= 2; # 24
+    x /= 4; # 6
+    x %= 3; # 0
+    write_int(x); # ((((10+5)-3)*2)/4)%3 = 0
+}""", ["0"]),
+
+("""
+void main() {
+    int x = 5;
+    x *= 2 + 3; # 5 * (2+3) = 25
+    write_int(x);
+}""", ["25"]),
+
+("""
+void main() {
+    int x = 3;
+    x += x; # 6
+    write_int(x);
+    x *= x + 1; # 6 * 7 = 42
+    write_int(x);
+}""", ["6","42"]),
+
+("""
+void main() {
+    int x = -5;
+    x %= 2; # -5 % 2 = -1 (Wasm sign = dividend)
+    write_int(x);
+}""", ["-1"]),
+
+("""
+void main() {
+    int i = 0;
+    i++; # 1
+    write_int(i);
+    i--; # 0
+    write_int(i);
+}""", ["1","0"]),
+
+("""
+void main() {
+    for (int i = 0; i < 3; i++) {
+        write_int(i);
+    }
+}""", ["0","1","2"]),
+
+("""
+void main() {
+    int sum = 0;
+    for (int i = 3; i > 0; i--) {
+        sum += i; # 3 + 2 + 1 = 6
+    }
+    write_int(sum);
+}""", ["6"]),
 ]
 
 @pytest.mark.parametrize("src,expected", ok_cases)

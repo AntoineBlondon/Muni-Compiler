@@ -93,7 +93,7 @@ class Parser:
         if self.peek() == "UNTIL_KW":
             return self.parse_until()
         
-        # member‐assignment: p.x = expr;
+        # member‐assignment or reassignment: p.x = expr; p.x += expr;
         if kind == "IDENT" and self.tokens[self.pos+1].kind == "DOT":
             # look ahead for ASSIGN
             j = self.pos + 1
@@ -101,16 +101,24 @@ class Parser:
                 if self.tokens[j+1].kind != "IDENT":
                     break
                 j += 2
-            if j < len(self.tokens) and self.tokens[j].kind == "ASSIGN":
-                lhs = self.parse_primary()
-                self.expect("ASSIGN")
-                rhs = self.parse_expr()
-                if semi: self.expect("SEMI")
-                return self.ast.MemberAssignment(lhs, lhs.field, rhs, # type: ignore
-                                                pos=(tok.line, tok.col))
+            if j < len(self.tokens) and self.tokens[j].kind in ("ASSIGN", "REASSIGN"):
+                lhs = self.parse_primary()  # MemberAccess
+                if self.peek() == "ASSIGN":
+                    self.expect("ASSIGN")
+                    rhs = self.parse_expr()
+                    if semi: self.expect("SEMI")
+                    return self.ast.MemberAssignment(lhs, lhs.field, rhs, pos=(tok.line, tok.col)) #type: ignore
+                elif self.peek() == "REASSIGN":
+                    op_text = self.expect("REASSIGN").text  # e.g. "+="
+                    op = op_text[0]                         # '+', '-', '*', '/', '%'
+                    rhs = self.parse_expr()
+                    if semi: self.expect("SEMI")
+                    # desugar: p.x += e  ==>  p.x = (p.x + e)
+                    new_rhs = self.ast.BinOp(op, lhs, rhs)
+                    return self.ast.MemberAssignment(lhs, lhs.field, new_rhs, pos=(tok.line, tok.col)) # type: ignore
 
-        # plain assignment: x = expr;
-        if kind == "IDENT" and self.tokens[self.pos+1].kind == "ASSIGN":
+        # plain assignment or reassignment: x = expr; x += expr;
+        if kind == "IDENT" and self.tokens[self.pos+1].kind in ("ASSIGN", "REASSIGN"):
             return self.parse_assignment(tok, semi)
 
         # local declaration: int|boolean|void
@@ -150,6 +158,36 @@ class Parser:
                 declaration_type, name_tok.text, expr,
                 pos=(first_tok.line, first_tok.col)
             )
+        if kind == "IDENT" and self.tokens[self.pos+1].kind in ("INCR", "DECR"):
+            name_tok = self.expect("IDENT")
+            op_tok   = self.next()  # INCR or DECR
+            if semi: self.expect("SEMI")
+            lvalue = self.ast.Ident(name_tok.text, pos=(name_tok.line, name_tok.col))
+            return self._incdec_assignment_from_lvalue(
+                lvalue, is_inc=(op_tok.kind=="INCR"), pos=(name_tok.line, name_tok.col)
+            )
+        
+        # member postfix inc/dec: p.x++; p.y.z--;
+        if kind == "IDENT" and self.tokens[self.pos+1].kind == "DOT":
+            # Look ahead through .ident chains and check for INCR/DECR
+            j = self.pos
+            # parse a primary to reuse your existing chain logic
+            save = self.pos
+            try:
+                lhs = self.parse_primary()  # should yield MemberAccess/Ident/MethodCall...
+            finally:
+                pass
+            # If next token is INCR/DECR and lhs is an lvalue (Ident or MemberAccess):
+            if self.peek() in ("INCR", "DECR") and isinstance(lhs, (self.ast.Ident, self.ast.MemberAccess)):
+                op_tok = self.next()
+                if semi: self.expect("SEMI")
+                return self._incdec_assignment_from_lvalue(
+                    lhs, is_inc=(op_tok.kind=="INCR"), pos=(tok.line, tok.col)
+                )
+            else:
+                # not an inc/dec – rewind so other branches can parse this normally
+                self.pos = save
+
 
 
         
@@ -642,15 +680,26 @@ class Parser:
 
 
     def parse_assignment(self, tok_ident, semi=True):
-        # tok_ident is the IDENT token
+        # tok_ident is the IDENT token already peeked by caller
+        name = tok_ident.text
         self.expect("IDENT")
-        self.expect("ASSIGN")
-        expr = self.parse_expr()
-        if semi: self.expect("SEMI")
-        return self.ast.VariableAssignment(
-            tok_ident.text, expr,
-            pos=(tok_ident.line, tok_ident.col)
-        )
+        if self.peek() == "ASSIGN":
+            self.next()
+            expr = self.parse_expr()
+            if semi: self.expect("SEMI")
+            return self.ast.VariableAssignment(name, expr, pos=(tok_ident.line, tok_ident.col))
+        elif self.peek() == "REASSIGN":
+            op_text = self.next().text  # "+=", "-=", ...
+            op = op_text[0]
+            rhs = self.parse_expr()
+            if semi: self.expect("SEMI")
+            # desugar: x += e  ==>  x = (x + e)
+            left_ident = self.ast.Ident(name, pos=(tok_ident.line, tok_ident.col))
+            new_rhs = self.ast.BinOp(op, left_ident, rhs)
+            return self.ast.VariableAssignment(name, new_rhs, pos=(tok_ident.line, tok_ident.col))
+        else:
+            raise SyntaxError(f"{tok_ident.line}:{tok_ident.col}: Expected ASSIGN or REASSIGN")
+
 
     def parse_expr(self, min_prec=0):
         lhs = self.parse_unary()
@@ -946,3 +995,21 @@ class Parser:
             return False
         finally:
             self.pos = save
+
+    def _incdec_assignment_from_lvalue(self, lvalue_node, is_inc: bool, pos):
+        one = self.ast.Number("1", pos=pos)
+        op  = "+" if is_inc else "-"
+
+        if isinstance(lvalue_node, self.ast.Ident):
+            # x++  ->  x = x + 1
+            rhs = self.ast.BinOp(op, self.ast.Ident(lvalue_node.name, pos=lvalue_node.pos), one)
+            return self.ast.VariableAssignment(lvalue_node.name, rhs, pos=pos)
+
+        if isinstance(lvalue_node, self.ast.MemberAccess):
+            # p.x++  ->  p.x = p.x + 1
+            rhs = self.ast.BinOp(op,
+                                self.ast.MemberAccess(lvalue_node.obj, lvalue_node.field, pos=lvalue_node.pos),
+                                one)
+            return self.ast.MemberAssignment(lvalue_node.obj, lvalue_node.field, rhs, pos=pos)
+
+        raise SyntaxError(f"{pos[0]}:{pos[1]}: ++/-- requires an assignable lvalue")

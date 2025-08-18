@@ -70,12 +70,15 @@ class SemanticChecker:
                 struct_decl.type_params,
                 struct_decl
             )
+        
 
         self.define_array()
 
         self.validate_struct_templates()
 
         self.build_global_function_signatures()
+
+        self.check_main_signature()
 
         for struct_name, (tparams, _) in self.struct_templates.items():
             placeholder_args = [TypeExpr(param) for param in tparams]
@@ -380,6 +383,15 @@ class SemanticChecker:
                 for _, param_type in method.params:
                     self.check_type_with_scope(param_type, scope_vars)
 
+    def check_main_signature(self):
+        params = self.func_sigs["main"][1]
+        # Main function must have no parameters
+        if len(params) != 0:
+            raise SemanticError("Invalid 'main' function signature: 'main' must have no parameters", None)
+        # Main function must return void
+        if self.func_sigs["main"][2] != TypeExpr("void"):
+            raise SemanticError("Invalid 'main' function signature: 'main' must return void", None)
+
     def build_global_function_signatures(self):
         for imp in self.imports:
             if imp.name in self.func_sigs:
@@ -556,12 +568,43 @@ class SemanticChecker:
                     if stmt.expr is None:
                         raise SemanticError(f"Missing return value in function returning '{expected_ret}'", pos)
                     rt = self.infer(stmt.expr, symbol_table, method_subst, struct_subst)
-                    if not (rt == expected_ret or (rt == TypeExpr("*") and expected_ret in self.structs)):
-                        raise SemanticError(f"Return type mismatch: expected {expected_ret}, got {rt}", pos)
+                    map_subst = {**method_subst, **struct_subst}
+                    rt = self.subst(rt, map_subst)
+                    exp = self.subst(expected_ret, map_subst)
+                    if not (rt == exp or (rt == TypeExpr("*") and exp in self.structs)):
+                        raise SemanticError(f"Return type mismatch: expected {exp}, got {rt}", pos)
                 continue
 
-            if isinstance(stmt, (FunctionCall, MethodCall)):
+            if isinstance(stmt, FunctionCall):
                 self.infer(stmt, symbol_table, method_subst, struct_subst)
+                _, param_types, _ = self.func_sigs[stmt.name]
+                expected_args = len(param_types)
+                if len(stmt.args) != expected_args:
+                    raise SemanticError(f"Function '{stmt.name}' expects {expected_args} arguments, got {len(stmt.args)}", pos)
+                continue
+            
+            if isinstance(stmt, MethodCall):
+                # Type-check the call first, then compute the expected value-arg count from the target method
+                self.infer(stmt, symbol_table, method_subst, struct_subst)
+                if isinstance(stmt.receiver, Ident) and stmt.receiver.name in self.struct_templates:
+                    # static method
+                    _, struct_decl = self.struct_templates[stmt.receiver.name]
+                    method_decl = next((m for m in struct_decl.methods if m.is_static and m.name == stmt.method), None)
+                    if method_decl is None:
+                        raise SemanticError(f"No static method '{stmt.method}' in structure '{stmt.receiver.name}'", pos)
+                    expected_args = len(method_decl.params)
+                else:
+                    # instance method
+                    receiver_ty = self.subst(self.infer(stmt.receiver, symbol_table, method_subst, struct_subst), method_subst)
+                    if receiver_ty.name not in self.struct_templates:
+                        raise SemanticError(f"Cannot call method on non-structure '{receiver_ty}'", pos)
+                    _, struct_decl = self.struct_templates[receiver_ty.name]
+                    method_decl = next((m for m in struct_decl.methods if not m.is_static and m.name == stmt.method), None)
+                    if method_decl is None:
+                        raise SemanticError(f"No method '{stmt.method}' in structure '{receiver_ty.name}'", pos)
+                    expected_args = len(method_decl.params)
+                if len(stmt.args) != expected_args:
+                    raise SemanticError(f"Method '{stmt.method}' expects {expected_args} arguments, got {len(stmt.args)}", pos)
                 continue
 
             self.infer(stmt, symbol_table, method_subst, struct_subst)
@@ -606,7 +649,7 @@ class SemanticChecker:
                 if element_type != array_type:
                     raise SemanticError(f"Array elements must all be {array_type}, got {element_type}", pos)
             self.instantiate_struct("array", [array_type])
-            expr.element_type = element_type  # type: ignore
+            expr.element_type = array_type  # type: ignore
             setattr(expr, "_elem_wt", array_type)
             return self.mark(expr, TypeExpr("array", [array_type]))
 
@@ -648,6 +691,10 @@ class SemanticChecker:
             elif expr.op in ("+", "-", "*", "/", "%"):
                 if lt != TypeExpr("int"):
                     raise SemanticError(f"Binary operator '{expr.op}' expects int, got {lt}", pos)
+                return self.mark(expr, TypeExpr("int"))
+            elif expr.op in ("+=", "-=", "*=", "/=", "%="):
+                if lt != TypeExpr("int"):
+                    raise SemanticError(f"Compound assignment operator '{expr.op}' expects int, got {lt}", pos)
                 return self.mark(expr, TypeExpr("int"))
             elif expr.op in (">", "<", ">=", "<=", "==", "!="):
                 if lt != TypeExpr("int"):
@@ -716,13 +763,19 @@ class SemanticChecker:
                 raise SemanticError(f"No method '{expr.method}' in structure '{receiver_type.name}'", pos)
             if method.is_static:
                 raise SemanticError(f"Cannot call static method '{expr.method}' on instance of '{receiver_type.name}'", pos)
-            
+
             if len(expr.type_args) != len(method.type_params):
                 raise SemanticError(
-                    f"Method '{expr.method}' expects {len(method.type_params)} type-arg(s), got {len(expr.type_args)}",
+                    f"Method '{expr.method}' expects {len(method.type_params)} type-arg{('s' if len(method.type_params) != 1 else '')}, got {len(expr.type_args)}",
                     pos
                 )
             
+            if len(expr.args) != len(method.params):
+                raise SemanticError(
+                    f"Method '{expr.method}' expects {len(method.params)} argument{('s' if len(method.params) != 1 else '')}, got {len(expr.args)}",
+                    pos
+                )
+
             struct_tvars = dict(zip(type_params, receiver_type.params))
             struct_sub_map = dict(zip(type_params, receiver_type.params))
             method_sub_map = dict(zip(method.type_params, expr.type_args))
@@ -786,13 +839,19 @@ class SemanticChecker:
             if expr.name not in self.func_sigs:
                 raise SemanticError(f"Call to undefined function '{expr.name}'", pos)
             tparams, ptypes, rtype = self.func_sigs[expr.name]
-
+            
             if len(expr.type_args) != len(tparams):
                 raise SemanticError(
-                    f"Function '{expr.name}' expects {len(tparams)} type-arg(s), got {len(expr.type_args)}",
+                    f"Function '{expr.name}' expects {len(tparams)} type-arg{('s' if len(tparams) != 1 else '')}, got {len(expr.type_args)}",
                     pos
                 )
-            
+
+            if len(expr.args) != len(ptypes):
+                raise SemanticError(
+                    f"Function '{expr.name}' expects {len(ptypes)} argument{('s'if len(ptypes)!=1 else'')}, got {len(expr.args)}",
+                    pos
+                )
+
             f_sub_map = dict(zip(tparams, expr.type_args))
 
             if expr.name in self.generic_functions and \
@@ -800,13 +859,13 @@ class SemanticChecker:
                 self.checked_func_insts.add(inst_key)
                 function_declaration = next(f for f in self.func_decls if f.name == expr.name)
                 body_symbol_table = {
-                    param_name: TypeExpr(param_type.name, [f_sub_map.get(c.name, c) for c in param_type.params])
+                    param_name: self.subst(param_type, f_sub_map)
                     for param_name, param_type in zip((p for p,_ in function_declaration.params), ptypes)
                 }
                 self.check_block(
                     function_declaration.body,
                     body_symbol_table,
-                    expected_ret=TypeExpr(rtype.name, [f_sub_map.get(c.name, c) for c in rtype.params]),
+                    expected_ret = self.subst(rtype, f_sub_map),
                     in_loop=False,
                     struct_subst={},
                     method_subst=f_sub_map

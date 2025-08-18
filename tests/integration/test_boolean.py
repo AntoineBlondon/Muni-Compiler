@@ -1,4 +1,3 @@
-# test_booleans.py
 import pytest
 from muni_test import run_muni, compile_error
 

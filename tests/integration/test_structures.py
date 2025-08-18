@@ -1,4 +1,3 @@
-# test_structures.py
 import pytest
 from muni_test import run_muni, compile_error
 
@@ -55,6 +54,24 @@ void main() {
     write_int(p.x);
     write_int(p.y);
 }""", ["0","0","7","9"]),
+
+# generic static method in non generic struct
+("""
+structure ArrayCreator {
+    static array<T> create_array<T>(int size, T base_value) {
+        array<T> a = array<T>(size);
+        for (int i = 0; i < size; i = i + 1) {
+            a.set(i, base_value);
+        }
+        return a;
+    }
+}
+void main() {
+    array<int> arr = ArrayCreator.create_array<int>(5, 42);
+    for (int i = 0; i < arr.length; i = i + 1) {
+        write_int(arr.get(i));
+    }
+}""", ["42","42","42","42","42"]),
 ]
 
 @pytest.mark.parametrize("src,expected", ok_cases)

@@ -1,4 +1,3 @@
-# test_arrays.py
 import pytest
 from muni_test import run_muni, compile_error, runtime_error
 
@@ -39,6 +38,19 @@ void main() {
     write_int(x.get(1));
     write_int(x.get(2));
 }""", ["1","9","1"]),
+
+# nested arrays
+("""
+void main() {
+    array<array<int>> x = [[1, 2], [3, 4]];
+    x.set(1, [5, 6]);
+    write_int(x.get(0).get(0));
+    write_int(x.get(0).get(1));
+    write_int(x.get(1).get(0));
+    write_int(x.get(1).get(1));
+}""", ["1","2","5","6"]),
+
+
 ]
 
 @pytest.mark.parametrize("src,expected", ok_cases)
