@@ -105,7 +105,10 @@ def register_host_functions(linker, store) -> Dict[str, Optional[Memory]]:
         # Print a single character
         sys.stdout.write(chr(x))
         sys.stdout.flush()
-
+    
+    def wasi_write_flt(x: float) -> None:
+        # Print a float followed by newline
+        print(x)
 
     def wasi_input() -> int:
         # Read a line of input from the user
@@ -118,6 +121,7 @@ def register_host_functions(linker, store) -> Dict[str, Optional[Memory]]:
     # Register functions under the "env" module
     linker.define_func("env", "write_int", FuncType([ValType.i32()], []), wasi_write_int)
     linker.define_func("env", "write_chr", FuncType([ValType.i32()], []), wasi_write_chr)
+    linker.define_func("env", "write_flt", FuncType([ValType.f32()], []), wasi_write_flt)
     linker.define_func("env", "input", FuncType([], [ValType.i32()]), wasi_input)
     linker.define_func("muni", "trap_oob", FuncType([ValType.i32(), ValType.i32(), ValType.i32(), ValType.i32()], []), trap_oob)
     linker.define_func("muni", "trap_div0", FuncType([ValType.i32(), ValType.i32()], []), trap_div0)

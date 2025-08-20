@@ -47,7 +47,7 @@ class Parser:
     def parse(self):
         decls = []
         while self.peek() != "EOF":
-            # function or constructor: return‐type could be VOID_KW|INT_KW|BOOL_KW|IDENT
+            # function or constructor: return‐type could be VOID_KW|INT_KW|FLOAT_KW|BOOL_KW|IDENT
             if self.peek() == "IMPORT_KW":
                 decls.append(self.parse_import_declaration())
                 continue
@@ -124,7 +124,7 @@ class Parser:
         # local declaration: int|boolean|void
         # local declaration: built-in or T or T<…>
         is_local_decl = False
-        if kind in ("INT_KW","BOOL_KW","VOID_KW"):
+        if kind in ("INT_KW", "FLOAT_KW","BOOL_KW","VOID_KW"):
             is_local_decl = True
         elif kind in ("IDENT"):
             # simple: IDENT name = …
@@ -361,7 +361,7 @@ class Parser:
                     continue
 
             # --- normal instance field:  <type> <name>; ---
-            if self.peek() in ("INT_KW","BOOL_KW","IDENT"):
+            if self.peek() in ("INT_KW", "FLOAT_KW","BOOL_KW","IDENT"):
                 # look‐ahead past any generic args to see if we really have
                 #   <type> <name> ;
                 j = self.pos + 1
@@ -741,10 +741,15 @@ class Parser:
         tok = self.peek_token()
         kind, text, line, col = tok.kind, tok.text, tok.line, tok.col
 
-        # literal number
-        if kind == "NUMBER":
+        # integer literal
+        if kind == "INT":
             self.next()
-            return self.ast.Number(text, pos=(line,col))
+            return self.ast.IntLiteral(text, pos=(line,col))
+
+        # float literal
+        if kind == "FLOAT":
+            self.next()
+            return self.ast.FloatLiteral(text, pos=(line,col))
 
         # boolean literal
         if kind == "TRUE":
@@ -922,8 +927,8 @@ class Parser:
 
     def parse_type_expr(self):
 
-        if self.peek() in ["INT_KW", "VOID_KW", "BOOL_KW"]:
-            name = {"INT_KW": "int", "VOID_KW": "void", "BOOL_KW": "boolean"}[self.next().kind]
+        if self.peek() in ["INT_KW", "FLOAT_KW", "VOID_KW", "BOOL_KW"]:
+            name = {"INT_KW": "int", "FLOAT_KW": "float", "VOID_KW": "void", "BOOL_KW": "boolean"}[self.next().kind]
             return self.ast.TypeExpr(name)
         else:
             tok = self.expect("IDENT")
@@ -979,7 +984,7 @@ class Parser:
         save = self.pos
         try:
             # Must be able to parse a type expression at the start
-            if self.peek() not in ("VOID_KW", "INT_KW", "BOOL_KW", "IDENT"):
+            if self.peek() not in ("VOID_KW", "INT_KW", "FLOAT_KW", "BOOL_KW", "IDENT"):
                 return False
 
             self.parse_type_expr()             # consume the return type (handles nested <...>)
@@ -997,7 +1002,7 @@ class Parser:
             self.pos = save
 
     def _incdec_assignment_from_lvalue(self, lvalue_node, is_inc: bool, pos):
-        one = self.ast.Number("1", pos=pos)
+        one = self.ast.IntLiteral("1", pos=pos)
         op  = "+" if is_inc else "-"
 
         if isinstance(lvalue_node, self.ast.Ident):

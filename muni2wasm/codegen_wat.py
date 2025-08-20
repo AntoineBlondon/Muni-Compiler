@@ -14,7 +14,8 @@ from .ast import (
     ContinueStmt,
     BinOp,
     UnaryOp,
-    Number,
+    IntLiteral,
+    FloatLiteral,
     BooleanLiteral,
     Ident,
     StructureDeclaration,
@@ -103,6 +104,11 @@ CMP_MAP = {
     ">=": {I: "i32.ge_s", F: "f32.ge"},
 }
 
+LOGIC_MAP = {
+    "&&": {I: "i32.and"},
+    "||": {I: "i32.or"},
+}
+
 LOAD = {I: "i32.load", F: "f32.load"}
 STORE = {I: "i32.store", F: "f32.store"}
 
@@ -123,6 +129,7 @@ class CodeGen:
         self.struct_insts: dict[tuple[str,tuple[str,...]], bool] = {}
         # same for free generic functions
         self.fn_insts: dict[tuple[str,tuple[str,...]], bool] = {}
+        self.local_types: dict[str, str] = {}   
 
         self._tv_map: dict[str, TypeExpr] = {}
         self._lit_depth = 0
@@ -137,12 +144,25 @@ class CodeGen:
         # 1) host imports
         for imp in self.program.decls:
             if isinstance(imp, ImportDeclaration) and imp.source is None:
-                param_decl = " ".join("i32" for _ in imp.params)
-                rt = imp.return_type.name if hasattr(imp.return_type, "name") else imp.return_type # type: ignore
-                result_decl = "" if rt == "void" else "(result i32)"
+                # params can be [TypeExpr, ...] OR [(name, TypeExpr), ...]
+                param_types: list[str] = []
+                for p in imp.params:
+                    if isinstance(p, tuple):
+                        _, pt = p
+                    else:
+                        pt = p
+                    param_types.append(wasm_ty(pt))
+
+                # build the (param …) piece only if there are params
+                param_part = f"(param {' '.join(param_types)}) " if param_types else ""
+
+                # result
+                rt_name = imp.return_type.name if hasattr(imp.return_type, "name") else imp.return_type #type: ignore
+                result_part = "" if rt_name == "void" else f"(result {wasm_ty(imp.return_type)})" #type: ignore
+
                 self.out.append(
                     f'  (import "{imp.module}" "{imp.name}" '
-                    f'(func ${imp.name} (param {param_decl}) {result_decl}))'
+                    f'(func ${imp.name} {param_part}{result_part}))'
                 )
 
         self.import_function("muni", "trap_oob", ["i32", "i32", "i32", "i32"])
@@ -174,10 +194,18 @@ class CodeGen:
         for d in self.program.decls:
             if isinstance(d, StructureDeclaration):
                 for sf in d.static_fields:
-                    val = sf.expr.value if isinstance(sf.expr, Number) else (1 if sf.expr.value else 0)
-                    self.out.append(
-                        f'  (global ${d.name}_{sf.name} i32 (i32.const {val}))'
-                    )
+                    if isinstance(sf.expr, IntLiteral):
+                        ty = "i32"
+                        init = f"(i32.const {sf.expr.value})"
+                    elif isinstance(sf.expr, BooleanLiteral):
+                        ty = "i32"
+                        init = f"(i32.const {1 if sf.expr.value else 0})"
+                    elif isinstance(sf.expr, FloatLiteral):
+                        ty = "f32"
+                        init = f"(f32.const {sf.expr.value})"
+                    else:
+                        continue
+                    self.out.append(f"  (global ${d.name}_{sf.name} {ty} {init})")
 
 
         # 6) emit all free, non-generic functions
@@ -237,6 +265,8 @@ class CodeGen:
         self.current_struct = struct_name
         self.current_targs  = [ta.name for ta in (type_args or [])]
         self.current_method = m.name
+        self.locals = []
+        self.local_types = {}
         # reset per-method state
         self.code = []
 
@@ -260,27 +290,26 @@ class CodeGen:
         params = []
         if is_instance or is_constructor:
             params.append("(param $this i32)")
-        for pname, _ in m.params:
-            params.append(f"(param ${pname} i32)")
+        for pname, pty in m.params:
+            params.append(f"(param ${pname} {wasm_ty(pty)})")
 
         # return signature
         if is_constructor:
             result_decl = "(result i32)"
         else:
-            result_decl = "" if m.return_type == TypeExpr("void") else "(result i32)"
-
+            result_decl = "" if m.return_type == TypeExpr("void") else f"(result {wasm_ty(m.return_type)})"
+        
         # recursively collect locals (including those in for-init)
-        self.locals = [
+        temp_i32 = [
             "__struct_ptr", "__lit", "__arr_ptr", "__idx", "__val", "__arr_build",
-            # dedicated for array.set/get
-            "__set_rcv", "__set_idx", "__set_val",
-            "__get_rcv", "__get_idx",
-            # dedicated for literals
-            "__lit_hdr", "__lit_base",
-            # dedicated for create_array
-            "__new_arr", "__new_len",
+            "__set_rcv", "__set_idx", "__get_rcv", "__get_idx",
+            "__lit_hdr", "__lit_base", "__new_arr", "__new_len",
+            "__set_val",
             *[f"__lit_hdr{i}" for i in range(LIT_MAX)],
             *[f"__lit_base{i}" for i in range(LIT_MAX)],
+        ]
+        temp_f32 = [
+            "__set_val_f32",  # for array.set when element is float
         ]
 
         def scan(stmt):
@@ -289,6 +318,7 @@ class CodeGen:
             if isinstance(stmt, VariableDeclaration) and stmt.type != TypeExpr("void"):
                 if stmt.name not in self.locals:
                     self.locals.append(stmt.name)
+                self.local_types[stmt.name] = wasm_ty(stmt.type)
             # if-statement
             elif isinstance(stmt, IfStmt):
                 for s in stmt.then_stmts + stmt.else_stmts:
@@ -316,7 +346,12 @@ class CodeGen:
             scan(st)
 
         # emit the function header
-        locals_decl = " ".join(f"(local ${n} i32)" for n in self.locals)
+        locals_decl = " ".join(
+            [f"(local ${n} i32)" for n in temp_i32] +
+            [f"(local ${n} f32)" for n in temp_f32] +
+            [f"(local ${n} {self.local_types.get(n, 'i32')})"
+            for n in self.locals if n not in temp_i32 and n not in temp_f32]
+        )
         header = f"  (func ${fn_name} {' '.join(params)} {result_decl} {locals_decl}"
         self.out.append(header)
 
@@ -342,19 +377,21 @@ class CodeGen:
 
 
     def gen_func(self, func: FunctionDeclaration, type_args=None):
+        self.locals = []
+        self.local_types = {}
         #print(f"[DEBUG] Generating function {func.name} with type args {type_args}")
-        self.locals = [
+        temp_i32 = [
             "__struct_ptr", "__lit", "__arr_ptr", "__idx", "__val", "__arr_build",
-            # dedicated for array.set/get
-            "__set_rcv", "__set_idx", "__set_val",
-            "__get_rcv", "__get_idx",
-            # dedicated for literals
-            "__lit_hdr", "__lit_base",
-            # dedicated for create_array
-            "__new_arr", "__new_len",
+            "__set_rcv", "__set_idx", "__get_rcv", "__get_idx",
+            "__lit_hdr", "__lit_base", "__new_arr", "__new_len",
+            "__set_val",
             *[f"__lit_hdr{i}" for i in range(LIT_MAX)],
             *[f"__lit_base{i}" for i in range(LIT_MAX)],
         ]
+        temp_f32 = [
+            "__set_val_f32",  # for array.set when element is float
+        ]
+
 
         self.code = []
         raw = func.name
@@ -366,6 +403,7 @@ class CodeGen:
             if isinstance(s, VariableDeclaration) and s.type != TypeExpr("void"):
                 if s.name not in self.locals:
                     self.locals.append(s.name)
+                self.local_types[s.name] = wasm_ty(s.type)
             elif isinstance(s, IfStmt):
                 for t in s.then_stmts + s.else_stmts:
                     scan(t)
@@ -384,9 +422,14 @@ class CodeGen:
         for st in func.body:
             scan(st)
 
-        params_decl = " ".join(f"(param ${n} i32)" for n, _ in func.params)
-        result_decl = "" if func.return_type == TypeExpr("void") else "(result i32)"
-        locals_decl = " ".join(f"(local ${n} i32)" for n in self.locals)
+        params_decl = " ".join(f"(param ${n} {wasm_ty(t)})" for n, t in func.params)
+        result_decl = "" if func.return_type == TypeExpr("void") else f"(result {wasm_ty(func.return_type)})"
+        locals_decl = " ".join(
+            [f"(local ${n} i32)" for n in temp_i32] +
+            [f"(local ${n} f32)" for n in temp_f32] +
+            [f"(local ${n} {self.local_types.get(n, 'i32')})"
+            for n in self.locals if n not in temp_i32 and n not in temp_f32]
+        )
 
         hdr = f"  (func ${name} {params_decl} {result_decl} {locals_decl}"
         self.out.append(hdr)
@@ -433,7 +476,9 @@ class CodeGen:
                 
             # Emit the store into that field
             off = self.struct_layouts[struct_name]["offsets"][stmt.field]
-            self.emit(f"i32.store offset={off}")
+            fty = getattr(stmt, "field_type", None) or getattr(stmt.obj, "field_type", None)  # whichever you annotate
+            op_store = "f32.store" if fty and fty.name == "float" else "i32.store"
+            self.emit(f"{op_store} offset={off}")
             return
 
         # ReturnStmt
@@ -587,7 +632,7 @@ class CodeGen:
         # DoStmt
         if isinstance(stmt, DoStmt):
             if stmt.count is None:
-                stmt.count = Number("1")
+                stmt.count = IntLiteral("1")
             try:
                 if stmt.count.value == 0:
                     return
@@ -659,8 +704,10 @@ class CodeGen:
         raise NotImplementedError(f"Cannot codegen statement: {stmt}")
 
     def gen_expr(self, expr):
-        if isinstance(expr, Number):
+        if isinstance(expr, IntLiteral):
             self.emit(f"i32.const {expr.value}")
+        elif isinstance(expr, FloatLiteral):
+            self.emit(f"f32.const {expr.value}")
         elif isinstance(expr, BooleanLiteral):
             self.emit(f"i32.const {1 if expr.value else 0}")
         elif isinstance(expr, ArrayLiteral):
@@ -678,9 +725,15 @@ class CodeGen:
             self._lit_depth += 1
             try:
                 slot = 4
+                elem_ty = getattr(expr, "array_elem", None)
+                if elem_ty is None:
+                    is_float = any(isinstance(e, FloatLiteral) for e in expr.elements)
+                else:
+                    is_float = (elem_ty.name == "float")
+                store_op = "f32.store" if is_float else "i32.store"
 
                 # build header and capture it in this level's local
-                self.create_array(Number(n))     # leaves header on stack
+                self.create_array(IntLiteral(n))     # leaves header on stack
                 self.emit(f"local.set ${hdr}")
 
                 # base = header.buffer
@@ -696,9 +749,7 @@ class CodeGen:
 
                     # value (may build nested arrays; safe because this level's locals are unique)
                     self.gen_expr(elt)
-
-                    # store 4 bytes (int or pointer)
-                    self.emit("i32.store")
+                    self.emit(store_op)
 
                 # result: header for this literal
                 self.emit(f"local.get ${hdr}")
@@ -750,21 +801,27 @@ class CodeGen:
                 self.gen_expr(expr.expr)
                 self.emit("i32.eqz")
             else:
-                self.emit("i32.const 0")
-                self.gen_expr(expr.expr)
-                self.emit("i32.sub")
-        elif isinstance(expr, BinOp):
-            if expr.op in ("/", "%"):
-                # evaluate right into $__lit, left into $__struct_ptr (reuse temps)
-                self.gen_expr(expr.right)
-                self.emit("local.set $__lit")          # rhs
-                self.gen_expr(expr.left)
-                self.emit("local.set $__struct_ptr")   # lhs
+                # unary '-'
+                if getattr(expr.expr, "type", TypeExpr("int")).name == "float":
+                    self.gen_expr(expr.expr)
+                    self.emit("f32.neg")
+                else:
+                    self.emit("i32.const 0")
+                    self.gen_expr(expr.expr)
+                    self.emit("i32.sub")
 
+        elif isinstance(expr, BinOp):
+            op = expr.op
+            lty = wasm_ty(expr.left.type)
+            rty = wasm_ty(expr.right.type)
+
+            # % only for ints
+            if op in ("/", "%") and lty == "i32":
+                # INT: keep your div/0 trap
+                self.gen_expr(expr.right); self.emit("local.set $__lit")
+                self.gen_expr(expr.left);  self.emit("local.set $__struct_ptr")
                 line = expr.pos[0] if getattr(expr, "pos", None) else 0 # type: ignore
                 col  = expr.pos[1] if getattr(expr, "pos", None) else 0 # type: ignore
-
-                # if (rhs == 0) trap_div0(line, col)
                 self.emit("local.get $__lit")
                 self.emit("i32.const 0")
                 self.emit("i32.eq")
@@ -774,24 +831,39 @@ class CodeGen:
                 self.emit("  call $trap_div0")
                 self.emit("  unreachable")
                 self.emit("end")
-
-                # perform op: lhs (now) / rhs
                 self.emit("local.get $__struct_ptr")
                 self.emit("local.get $__lit")
-                self.emit("i32.div_s" if expr.op == "/" else "i32.rem_s")
+                self.emit("i32.div_s" if op == "/" else "i32.rem_s")
                 return
 
-            self.gen_expr(expr.left)
-            self.gen_expr(expr.right)
-            opmap = {
-                "||": "i32.or", "&&": "i32.and",
-                "==": "i32.eq", "!=": "i32.ne",
-                "<":  "i32.lt_s", "<=": "i32.le_s",
-                ">":  "i32.gt_s", ">=": "i32.ge_s",
-                "+":  "i32.add", "-":  "i32.sub",
-                "*":  "i32.mul",
-            }
-            self.emit(opmap[expr.op])
+            if op == "/" and lty == "f32":
+                # FLOAT: IEEE — no div-by-zero trap
+                self.gen_expr(expr.left)
+                self.gen_expr(expr.right)
+                self.emit("f32.div")
+                return
+
+            # comparisons
+            if op in CMP_MAP:
+                self.gen_expr(expr.left)
+                self.gen_expr(expr.right)
+                self.emit(CMP_MAP[op][lty])
+                return
+            
+            if op in LOGIC_MAP and lty == "i32":
+                self.gen_expr(expr.left)
+                self.gen_expr(expr.right)
+                self.emit(LOGIC_MAP[op][lty])
+                return
+
+            # arithmetic +, -, *
+            if op in BINOP_MAP:
+                self.gen_expr(expr.left)
+                self.gen_expr(expr.right)
+                self.emit(BINOP_MAP[op][lty])
+                return
+
+            raise NotImplementedError(f"BinOp {op}")
         # static‐field access (math.pi → global.get $math_pi)
         elif isinstance(expr, MemberAccess) and getattr(expr, "is_static_field", False):
             self.emit(f"global.get ${expr.struct}_{expr.field}")
@@ -820,16 +892,20 @@ class CodeGen:
                 raise RuntimeError(f"Field '{expr.field}' not found in struct '{struct_name}'")
                 
             off = self.struct_layouts[struct_name]["offsets"][expr.field]
-            self.emit(f"i32.load offset={off}")
+            fty = getattr(expr, "field_type", None)
+            op_load = "f32.load" if fty and fty.name == "float" else "i32.load"
+            self.emit(f"{op_load} offset={off}")
             return
         
         # --- intrinsic array methods (must go _before_ any static‐generic logic) ---
         elif isinstance(expr, MethodCall) and expr.struct.name == "array":  # type: ignore
             # source position for nicer traps
-            line = expr.pos[0] if getattr(expr, "pos", None) else 0  # type: ignore
-            col  = expr.pos[1] if getattr(expr, "pos", None) else 0  # type: ignore
-            elem_ty = getattr(expr, "array_elem", TypeExpr("int"))  # annotated by semantics
-            slot    = 4
+            line     = expr.pos[0] if getattr(expr, "pos", None) else 0  # type: ignore
+            col      = expr.pos[1] if getattr(expr, "pos", None) else 0  # type: ignore
+            elem_ty  = getattr(expr, "array_elem", TypeExpr("int"))
+            load_op  = "f32.load"  if elem_ty.name == "float" else "i32.load"
+            store_op = "f32.store" if elem_ty.name == "float" else "i32.store"
+            slot     = 4
             # array.get(idx)
             if expr.method == "get":
                 # save receiver safely
@@ -879,7 +955,7 @@ class CodeGen:
                 self.emit("i32.const 4")
                 self.emit("i32.mul")
                 self.emit("i32.add")
-                self.emit("i32.load")
+                self.emit(load_op)
                 return
 
 
@@ -895,7 +971,7 @@ class CodeGen:
 
                 # value (may build nested arrays)
                 self.gen_expr(expr.args[1])
-                self.emit("local.set $__set_val")
+                self.emit("local.set $__set_val_f32" if elem_ty.name == "float" else "local.set $__set_val")
 
                 # restore receiver to $__arr_ptr
                 self.emit("local.get $__set_rcv")
@@ -936,8 +1012,8 @@ class CodeGen:
                 self.emit("i32.const 4")
                 self.emit("i32.mul")
                 self.emit("i32.add")
-                self.emit("local.get $__set_val")
-                self.emit("i32.store")
+                self.emit("local.get $__set_val_f32" if elem_ty.name == "float" else "local.get $__set_val")
+                self.emit(store_op)
                 return
 
 
@@ -1016,6 +1092,47 @@ class CodeGen:
             # return header
             self.emit("local.get $__struct_ptr")
             return
+        
+        # --- explicit cast: as<T>(expr) ---
+        elif isinstance(expr, FunctionCall) and expr.name == "as" and len(expr.args) == 1 and len(expr.type_args) == 1:
+            # emit source value
+            self.gen_expr(expr.args[0])
+
+            # determine src/dst wasm types
+            # Prefer the checker’s annotation if present:
+            src_ty = getattr(expr.args[0], "type", TypeExpr("int"))
+            dst_ty = expr.type_args[0]
+            src_wt = wasm_ty(src_ty)
+            dst_wt = wasm_ty(dst_ty)
+
+            # numeric & boolean lowering
+            if dst_ty.name == "int":
+                if src_wt == "f32":
+                    self.emit("i32.trunc_f32_s")
+                # boolean->int and int->int: already i32 (no-op)
+                return
+
+            if dst_ty.name == "float":
+                if src_wt == "i32":
+                    self.emit("f32.convert_i32_s")
+                # float->float: no-op
+                return
+
+            if dst_ty.name == "boolean":
+                # Normalize to i32 0/1
+                if src_wt == "i32":
+                    # int or pointer → bool: x != 0
+                    self.emit("i32.const 0")
+                    self.emit("i32.ne")
+                else:  # f32
+                    self.emit("f32.const 0")
+                    self.emit("f32.ne")
+                return
+
+            # for ref types (structs/arrays), as<T> is a no-op at Wasm level (they’re i32)
+            # value already on stack
+            return
+
 
 
         # --- struct‐constructor (monomorphic or generic) ---
@@ -1103,6 +1220,8 @@ class CodeGen:
             return 4
         elif type_expr.name == "boolean":
             return 4
+        elif type_expr.name == "float":
+            return 4
         elif type_expr.name == "void":
             return 0
         elif type_expr.name in self.struct_layouts:
@@ -1126,7 +1245,7 @@ class CodeGen:
         self.out.extend([f"  (import \"{env}\" \"{name}\" (func ${name} (param {' '.join(type_args)}) {result_decl}))"])
 
 
-    def create_array(self, length: Number):
+    def create_array(self, length: IntLiteral):
         header_size = self.struct_layouts["array"]["size"]
         self.emit(f"i32.const {header_size}")
         self.emit("call $malloc")
@@ -1157,3 +1276,17 @@ class CodeGen:
         # return header
         self.emit("local.get $__new_arr")
         return
+    
+
+WASM_TY = {
+"int": "i32",
+"boolean": "i32",
+"float": "f32",
+"void": None,
+}
+
+def wasm_ty(t: TypeExpr | str) -> str:
+    name = t if isinstance(t, str) else t.name
+    if name == "float":
+        return "f32"
+    return "i32"

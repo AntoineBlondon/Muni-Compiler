@@ -71,13 +71,21 @@ class UnaryOp:
     def __str__(self):
         return f"({self.op} {self.expr})"
 
-class Number:
+class IntLiteral:
     def __init__(self, value, pos=None):
         self.value = int(value)
         self.pos = pos
 
     def __str__(self):
         return f"int({self.value})"
+    
+class FloatLiteral:
+    def __init__(self, value, pos=None):
+        self.value = float(value)
+        self.pos = pos
+
+    def __str__(self):
+        return f"float({self.value})"
 
 class BooleanLiteral:
     def __init__(self, value: bool, pos=None):

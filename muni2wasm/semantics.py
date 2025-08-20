@@ -15,7 +15,8 @@ from .ast import (
     ContinueStmt,
     BinOp,
     UnaryOp,
-    Number,
+    IntLiteral,
+    FloatLiteral,
     BooleanLiteral,
     Ident,
     StructureDeclaration,
@@ -337,7 +338,7 @@ class SemanticChecker:
         if not typ.params and typ.name in scope_type_vars:
             return
         # built-in
-        if typ.name in ("int", "boolean", "void"):
+        if typ.name in ("int", "float", "boolean", "void"):
             if typ.params:
                 raise SemanticError(f"Type '{typ}' may not have parameters", typ.pos)
             return
@@ -361,7 +362,7 @@ class SemanticChecker:
             # static fields
             for static_field in struct_decl.static_fields:
                 setattr(static_field, "_wt", self.wasm_ty_of(static_field.type))
-                if not isinstance(static_field.expr, (Number, BooleanLiteral)):
+                if not isinstance(static_field.expr, (IntLiteral, FloatLiteral, BooleanLiteral)):
                     raise SemanticError(f"Static field '{static_field.name}' in structure '{struct_name}' must be a constant expression", static_field.pos)
                 if expr_type := self.infer(static_field.expr, {}, {}, {}) != static_field.type:
                     raise SemanticError(
@@ -372,7 +373,7 @@ class SemanticChecker:
             # normal fields
             for field in struct_decl.fields:
                 type_name = field.type.name
-                if type_name not in ("int", "boolean") and type_name not in type_params:
+                if type_name not in ("int", "float", "boolean") and type_name not in type_params:
                     if type_name not in self.struct_templates:
                         raise SemanticError(f"Undefined type '{type_name}' in structure '{struct_name}'", field.pos)
 
@@ -637,7 +638,8 @@ class SemanticChecker:
     def infer(self, expr, symbol_table, substitution_map, struct_templates_params) -> TypeExpr:
         pos = getattr(expr, "pos", None)
 
-        if isinstance(expr, Number): return self.mark(expr, TypeExpr("int"))
+        if isinstance(expr, IntLiteral): return self.mark(expr, TypeExpr("int"))
+        if isinstance(expr, FloatLiteral): return self.mark(expr, TypeExpr("float"))
         if isinstance(expr, BooleanLiteral): return self.mark(expr, TypeExpr("boolean"))
         if isinstance(expr, NullLiteral): return self.mark(expr, TypeExpr("*"))
         if isinstance(expr, CharLiteral): return self.mark(expr, TypeExpr("int"))
@@ -673,9 +675,13 @@ class SemanticChecker:
                     raise SemanticError(f"Unary '!' expects boolean, got {operand_type}", pos)
                 return self.mark(expr, TypeExpr("boolean"))
             if expr.op == "-":
-                if operand_type != TypeExpr("int"):
-                    raise SemanticError(f"Unary '-' expects int, got {operand_type}", pos)
-                return self.mark(expr, TypeExpr("int"))
+                if operand_type == TypeExpr("int"):
+                    return self.mark(expr, TypeExpr("int"))
+                elif operand_type == TypeExpr("float"):
+                    return self.mark(expr, TypeExpr("float"))
+                else:
+                    raise SemanticError(f"Unary '-' expects int or float, got {operand_type}", pos)
+                
             raise SemanticError(f"Unknown unary '{expr.op}'", pos)
         
         if isinstance(expr, BinOp):
@@ -689,17 +695,24 @@ class SemanticChecker:
             elif lt != rt:
                 raise SemanticError(f"Binary operator '{expr.op}' expects same types, got {lt} and {rt}", pos)
             elif expr.op in ("+", "-", "*", "/", "%"):
-                if lt != TypeExpr("int"):
-                    raise SemanticError(f"Binary operator '{expr.op}' expects int, got {lt}", pos)
-                return self.mark(expr, TypeExpr("int"))
+                if lt == TypeExpr("int"):
+                    return self.mark(expr, TypeExpr("int"))
+                elif lt == TypeExpr("float") and expr.op != "%":
+                    return self.mark(expr, TypeExpr("float"))
+                else:
+                    raise SemanticError(f"Binary operator '{expr.op}' expects int or float, got {lt}", pos)
             elif expr.op in ("+=", "-=", "*=", "/=", "%="):
-                if lt != TypeExpr("int"):
-                    raise SemanticError(f"Compound assignment operator '{expr.op}' expects int, got {lt}", pos)
-                return self.mark(expr, TypeExpr("int"))
+                if lt == TypeExpr("int"):
+                    return self.mark(expr, TypeExpr("int"))
+                elif lt == TypeExpr("float") and expr.op != "%=":
+                    return self.mark(expr, TypeExpr("float"))
+                else:
+                    raise SemanticError(f"Compound assignment operator '{expr.op}' expects int or float, got {lt}", pos)
             elif expr.op in (">", "<", ">=", "<=", "==", "!="):
-                if lt != TypeExpr("int"):
-                    raise SemanticError(f"Comparison operator '{expr.op}' expects int, got {lt}", pos)
-                return self.mark(expr, TypeExpr("boolean"))
+                if lt in [TypeExpr("int"), TypeExpr("float")]:
+                    return self.mark(expr, TypeExpr("boolean"))
+                else:
+                    raise SemanticError(f"Comparison operator '{expr.op}' expects int or float, got {lt}", pos)
             elif expr.op in ("&&", "||"):
                 if lt != TypeExpr("boolean"):
                     raise SemanticError(f"Logical operator '{expr.op}' expects boolean, got {lt}", pos)
@@ -791,6 +804,14 @@ class SemanticChecker:
                     )
             return self.mark(expr, self.subst(method.return_type, {**method_sub_map, **struct_sub_map}))
 
+        if isinstance(expr, FunctionCall) and expr.name == "as" and len(expr.args) == 1 and len(expr.type_args) == 1:
+            src = self.infer(expr.args[0], symbol_table, substitution_map, struct_templates_params)
+            # apply current substitutions to the destination type param
+            dst = self.subst(self.resolve_alias(expr.type_args[0]), {**substitution_map, **struct_templates_params})
+            if not self.can_cast(src, dst):
+                raise SemanticError(f"Cannot cast {src} to {dst}", expr.pos)
+            return self.mark(expr, dst)
+
         # Constructor call
         if isinstance(expr, FunctionCall) and expr.name in self.struct_templates:
             tparams, struct_decl = self.struct_templates[expr.name]
@@ -833,6 +854,8 @@ class SemanticChecker:
 
 
             return self.mark(expr, TypeExpr(expr.name, type_args))
+
+
 
         if isinstance(expr, FunctionCall):
             
@@ -936,4 +959,23 @@ class SemanticChecker:
 
     def mark(self, expr, ty: TypeExpr) -> TypeExpr:
         setattr(expr, "_wt", self.wasm_ty_of(ty))
+        setattr(expr, "type", ty)
         return ty
+    
+    def can_cast(self, src: TypeExpr, dst: TypeExpr) -> bool:
+        if src == dst:
+            return True
+        # null/star → any ref type
+        if src == TypeExpr("*") and dst.name not in ("int","float","boolean","void"):
+            return True
+        # numeric & bool casts (both ways)
+        if (src.name, dst.name) in {
+            ("int","float"), ("float","int"),
+            ("int","boolean"), ("boolean","int"),
+            ("float","boolean"), ("boolean","float"),
+        }:
+            return True
+        # any ref (struct/array) → boolean (i32 != 0)
+        if src.name not in ("int","float","boolean","void") and dst == TypeExpr("boolean"):
+            return True
+        return False
