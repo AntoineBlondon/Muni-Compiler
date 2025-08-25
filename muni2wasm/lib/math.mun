@@ -1,5 +1,7 @@
 structure math
 {
+
+    static float pi = 3.14159265358979323846264338327950;
     static int pow(int base, int exp)
     {
         if (exp == 0) {
@@ -15,4 +17,13 @@ structure math
         }
         return math.fibonacci(number - 1) + math.fibonacci(number - 2);
     }
+
+    static int factorial(int n)
+    {
+        if (n == 0) {
+            return 1;
+        }
+        return n * math.factorial(n - 1);
+    }
+
 }

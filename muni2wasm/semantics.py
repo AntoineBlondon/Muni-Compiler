@@ -27,8 +27,6 @@ from .ast import (
     ArrayLiteral,
     ImportDeclaration,
     TypeExpr,
-    FieldDeclaration,
-    MethodDeclaration,
     CharLiteral,
     StringLiteral,
 )
@@ -73,7 +71,6 @@ class SemanticChecker:
             )
         
 
-        self.define_array()
 
         self.validate_struct_templates()
 
@@ -212,38 +209,26 @@ class SemanticChecker:
                 self.rewrite_types_in_stmt(stmt.post)                            # type: ignore
 
     def rewrite_types_in_expr(self, expr):
-        # MethodCall: rewrite receiver *and* its own type_args
         if isinstance(expr, MethodCall):
-            # rewrite all arg-expressions first
             expr.args = [self.rewrite_types_in_expr(a) for a in expr.args]
+            expr.receiver = self.rewrite_types_in_expr(expr.receiver)
+            expr.type_args = [self.resolve_alias(t) for t in expr.type_args]
 
-            # if the receiver is a plain Ident whose name is an alias:
             if isinstance(expr.receiver, Ident) and expr.receiver.name in self.alias_map:
-                # splice in the real struct name + params
                 alias_ty = TypeExpr(expr.receiver.name, expr.type_args)
                 real_ty  = self.resolve_alias(alias_ty)
                 expr.receiver.name = real_ty.name
                 expr.type_args     = real_ty.params
-
-            # also rewrite any expressions inside the receiver itself:
-            expr.receiver = self.rewrite_types_in_expr(expr.receiver)
             return expr
 
-        # FunctionCall: its args may contain type aliases in sub-expressions
         if isinstance(expr, FunctionCall):
-            # first rewrite all the arg-expressions
             expr.args = [self.rewrite_types_in_expr(a) for a in expr.args]
-
-            # if this is actually an alias-based constructor, splice it out:
+            expr.type_args = [self.resolve_alias(t) for t in expr.type_args]
             if expr.name in self.alias_map:
-                # build the “fake” TypeExpr of the alias
                 alias_ty = TypeExpr(expr.name, expr.type_args)
-                # resolve it to the real underlying type
                 real_ty  = self.resolve_alias(alias_ty)
-                # replace name & type_args with the resolved struct & its params
                 expr.name      = real_ty.name
                 expr.type_args = real_ty.params
-
             return expr
 
         # MemberAccess / MemberAssignment
@@ -290,48 +275,6 @@ class SemanticChecker:
         self.raw_aliases.append(char_alias)
         self.raw_aliases.append(string_alias)
 
-    def define_array(self):
-        array_struct_decl = StructureDeclaration(
-            name="array",
-            type_params=["T"],
-            fields=[
-                FieldDeclaration(name="length", type=TypeExpr("int")),
-                FieldDeclaration(name="buffer", type=TypeExpr("T"))
-            ],
-            static_fields=[],
-            methods=[
-                MethodDeclaration(
-                    name="array",
-                    type_params=[],
-                    params=[("length", TypeExpr("int"))],
-                    return_type=TypeExpr("array", [TypeExpr("T")]),
-                    body=[],           # empty body
-                    is_static=True,
-                    pos=None
-                ),
-                MethodDeclaration(
-                    name="get",
-                    type_params=[],
-                    params=[("index", TypeExpr("int"))],
-                    return_type=TypeExpr("T"),
-                    body=[],
-                    is_static=False,
-                    pos=None
-                ),
-                MethodDeclaration(
-                    name="set",
-                    type_params=[],
-                    params=[("index", TypeExpr("int")), ("value", TypeExpr("T"))],
-                    return_type= TypeExpr("void"),
-                    body=[],
-                    is_static=False,
-                    pos=None
-                )
-            ]
-        )
-        self.struct_decls.append(array_struct_decl)
-        self.struct_templates["array"] = (["T"], array_struct_decl)
-        self.structs[TypeExpr("array")] = array_struct_decl
 
     def check_type_with_scope(self, typ: TypeExpr, scope_type_vars: set[str]):
         # bare var
@@ -628,12 +571,7 @@ class SemanticChecker:
             raise SemanticError(f"Wrong arity for alias {te.name}")
 
         substs = dict(zip(type_params, te.params))
-        def subst(t: TypeExpr) -> TypeExpr:
-            if not t.params and t.name in substs:
-                return substs[t.name]
-            return TypeExpr(t.name, [subst(c) for c in t.params])
-
-        return self.resolve_alias(subst(aliased), seen)
+        return self.resolve_alias(self.subst(aliased, substs), seen)
 
     def infer(self, expr, symbol_table, substitution_map, struct_templates_params) -> TypeExpr:
         pos = getattr(expr, "pos", None)
@@ -656,12 +594,12 @@ class SemanticChecker:
             return self.mark(expr, TypeExpr("array", [array_type]))
 
         if isinstance(expr, StringLiteral):
-            # string is a vec<char>
-            char_ty = TypeExpr("int")
-            vec_ty  = TypeExpr("vec", [char_ty])
-            # register/check vec<char>
-            self.instantiate_struct("vec", [char_ty])
-            return self.mark(expr, vec_ty)
+            str_ty = self.resolve_alias(TypeExpr("string"))
+            # typically vec<int> after char := int
+            if str_ty.name != "vec" or len(str_ty.params) != 1:
+                raise SemanticError("Internal: 'string' must resolve to vec<…>")
+            self.instantiate_struct(str_ty.name, str_ty.params)
+            return self.mark(expr, str_ty)
 
         if isinstance(expr, Ident):
             if expr.name not in symbol_table:
@@ -747,7 +685,6 @@ class SemanticChecker:
             struct_sub_map = dict(zip(struct_tvars, struct_args))
             for arg, (param_name, param_type) in zip(expr.args, method_declaration.params):
                 arg_type = self.infer(arg, symbol_table, substitution_map, struct_templates_params)
-
                 expected_type = self.subst(param_type, {**method_sub_map, **struct_sub_map})
                 if arg_type != expected_type:
                     raise SemanticError(
@@ -858,7 +795,6 @@ class SemanticChecker:
 
 
         if isinstance(expr, FunctionCall):
-            
             if expr.name not in self.func_sigs:
                 raise SemanticError(f"Call to undefined function '{expr.name}'", pos)
             tparams, ptypes, rtype = self.func_sigs[expr.name]

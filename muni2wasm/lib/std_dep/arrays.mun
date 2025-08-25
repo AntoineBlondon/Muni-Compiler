@@ -1,0 +1,26 @@
+
+structure array<T>
+{
+    int length;
+    T buffer; # The underlying buffer for the array (handled by the compiler)
+
+    array<T>(int length) {} # Constructor overridden by the compiler
+
+    T get(int index) {} # Method overridden by the compiler
+
+    void set(int index, T value) {} # Method overridden by the compiler
+
+    boolean _equals(array<T> other)
+    {
+        if (this.length != other.length) {
+            return false;
+        }
+        for (int i = 0; i < this.length; i++) {
+            if (this.get(i) != other.get(i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+}

@@ -125,10 +125,10 @@ class CodeGen:
         self._label_count = 0
         # Stack of (break_label, continue_label, exit_label)
         self._loop_stack: list[tuple[str, str, str]] = []
-        # map (struct_name, tuple[type_arg_names]) -> True
         self.struct_insts: dict[tuple[str,tuple[str,...]], bool] = {}
-        # same for free generic functions
         self.fn_insts: dict[tuple[str,tuple[str,...]], bool] = {}
+        self._emitted_struct_insts: set[tuple[str, tuple]] = set()
+        self._emitted_fn_insts: set[tuple[str, tuple]] = set()
         self.local_types: dict[str, str] = {}   
 
         self._tv_map: dict[str, TypeExpr] = {}
@@ -313,7 +313,6 @@ class CodeGen:
         ]
 
         def scan(stmt):
-            from .ast import VariableDeclaration, IfStmt, ForStmt, WhileStmt, DoStmt, UntilStmt
             # local variable
             if isinstance(stmt, VariableDeclaration) and stmt.type != TypeExpr("void"):
                 if stmt.name not in self.locals:
@@ -399,7 +398,6 @@ class CodeGen:
 
         # recursively collect locals
         def scan(s):
-            from .ast import VariableDeclaration, IfStmt, ForStmt, WhileStmt, DoStmt, UntilStmt
             if isinstance(s, VariableDeclaration) and s.type != TypeExpr("void"):
                 if s.name not in self.locals:
                     self.locals.append(s.name)
@@ -845,6 +843,48 @@ class CodeGen:
 
             # comparisons
             if op in CMP_MAP:
+                # Special-case: equality/inequality may be operator-overloaded for structs
+                if op in ("==", "!="):
+                    lt = getattr(expr.left, "type", TypeExpr("int"))
+                    rt = getattr(expr.right, "type", TypeExpr("int"))
+
+                    # If either side is float/int/bool only → primitive compare
+                    is_prim_l = (lt.name in ("int", "boolean", "float"))
+                    is_prim_r = (rt.name in ("int", "boolean", "float"))
+
+                    # If both primitives → keep previous behavior
+                    if is_prim_l and is_prim_r:
+                        self.gen_expr(expr.left)
+                        self.gen_expr(expr.right)
+                        self.emit(CMP_MAP[op][lty])
+                        return
+
+                    # If both are the same struct type (including generics)
+                    if self._is_struct_type(lt) and lt.name == getattr(rt, "name", None):
+                        base = lt.name
+                        # If the struct defines instance _equals, call it
+                        if self._struct_has_instance_method(base, "_equals"):
+                            # Register monomorph instantiation (generic support)
+                            targs = [self._remap_ty(p) for p in lt.params]
+                            key = (base, tuple(ta.name for ta in targs))
+                            self.struct_insts[key] = True
+
+                            # Evaluate receiver (left) and stash, then call with (this, right)
+                            self.gen_expr(expr.left)
+                            self.emit("local.set $__arr_ptr")
+                            self.emit("local.get $__arr_ptr")
+                            self.gen_expr(expr.right)
+
+                            mangled = self._mangle(f"{base}__\x65quals", targs)  # "_equals"
+                            # NOTE: above uses a literal "_equals"; the \x65 avoids accidental find/replace issues.
+
+
+                            self.emit(f"call ${mangled}")
+
+                            # a != b  ⇒  !a._equals(b)
+                            if op == "!=":
+                                self.emit("i32.eqz")
+                            return
                 self.gen_expr(expr.left)
                 self.gen_expr(expr.right)
                 self.emit(CMP_MAP[op][lty])
@@ -898,7 +938,7 @@ class CodeGen:
             return
         
         # --- intrinsic array methods (must go _before_ any static‐generic logic) ---
-        elif isinstance(expr, MethodCall) and expr.struct.name == "array":  # type: ignore
+        elif isinstance(expr, MethodCall) and expr.struct.name == "array" and expr.method in ("get", "set"):  # type: ignore
             # source position for nicer traps
             line     = expr.pos[0] if getattr(expr, "pos", None) else 0  # type: ignore
             col      = expr.pos[1] if getattr(expr, "pos", None) else 0  # type: ignore
@@ -1015,7 +1055,6 @@ class CodeGen:
                 self.emit("local.get $__set_val_f32" if elem_ty.name == "float" else "local.get $__set_val")
                 self.emit(store_op)
                 return
-
 
 
         # --- static method on a generic struct: Foo<T>.bar(...) ---
@@ -1277,7 +1316,19 @@ class CodeGen:
         self.emit("local.get $__new_arr")
         return
     
+    def _is_struct_type(self, t: TypeExpr) -> bool:
+        if isinstance(t, str):
+            return False
+        if t.name in ("int", "boolean", "float", "void"):
+            return False
+        # arrays are “runtime structs” but we’ll treat them specially
+        return t.name in self.struct_layouts
 
+    def _struct_has_instance_method(self, struct_name: str, method_name: str) -> bool:
+        for d in self.program.decls:
+            if isinstance(d, StructureDeclaration) and d.name == struct_name:
+                return any((not m.is_static) and m.name == method_name for m in d.methods)
+        return False
 WASM_TY = {
 "int": "i32",
 "boolean": "i32",
@@ -1290,3 +1341,4 @@ def wasm_ty(t: TypeExpr | str) -> str:
     if name == "float":
         return "f32"
     return "i32"
+

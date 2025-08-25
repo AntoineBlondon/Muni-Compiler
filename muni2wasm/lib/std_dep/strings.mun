@@ -1,0 +1,147 @@
+import <arrays.mun>;
+import <vectors.mun>;
+
+## alias char = int;
+## alias string = array<char>;
+
+boolean is_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+boolean is_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+
+
+int parse_int(string s)
+{
+    int i = 0;
+    int n = s.size;
+    int sign = 1;
+    int value = 0;
+
+    while (i < n && is_space(s.get(i))) {
+        i = i + 1;
+    }
+
+    if (i < n && (s.get(i) == '+' || s.get(i) == '-')) {
+        if (s.get(i) == '-') { sign = -1; }
+        i = i + 1;
+    }
+
+    while (i < n && is_digit(s.get(i))) {
+        value = value * 10 + (s.get(i) - '0');
+        i = i + 1;
+    }
+
+    return sign * value;
+}
+
+float parse_float(string s)
+{
+    int i = 0;
+    int n = s.size;
+    int sign = 1;
+    float value = 0.0;
+    float frac = 1.0;
+
+    while (i < n && is_space(s.get(i))) {
+        i = i + 1;
+    }
+
+    if (i < n && (s.get(i) == '+' || s.get(i) == '-')) {
+        if (s.get(i) == '-') { sign = -1; }
+        i = i + 1;
+    }
+
+    while (i < n && is_digit(s.get(i))) {
+        value = value * 10.0 + as<float>(s.get(i) - '0');
+        i = i + 1;
+    }
+
+    if (i < n && s.get(i) == '.') {
+        i = i + 1;
+        while (i < n && is_digit(s.get(i))) {
+            frac /= 10.0;
+            value += as<float>(s.get(i) - '0') * frac;
+            i = i + 1;
+        }
+    }
+
+    return as<float>(sign) * value;
+}
+
+
+string int_to_string(int x)
+{
+    if (x == 0) { return "0"; }
+
+    boolean neg = x < 0;
+    int n = x;
+
+    string rev = "";
+    while (n != 0) {
+        int d = n % 10;
+        if (d < 0) { d = -d; }
+        char ch = '0' + d;
+        rev.push(ch);
+        n = n / 10;
+    }
+
+    string out = "";
+    if (neg) { out.push('-'); }
+
+    for (int i = rev.size - 1; i >= 0; i--) {
+        out.push(rev.get(i));
+    }
+    return out;
+}
+
+string float_to_string(float x)
+{
+    # Very naive: break into int and fractional parts
+    string s = "";
+    int int_part = as<int>(x);
+    float frac_part = x - as<float>(int_part);
+
+    if (x < 0.0) {
+        s.push('-');
+        int_part = -int_part;
+        frac_part = -frac_part;
+    }
+
+    s.append(int_to_string(int_part));
+
+    s.push('.');
+
+    # take 6 decimal digits
+    for (int i = 0; i < 6; i++) {
+        frac_part = frac_part * 10.0;
+        int digit = as<int>(frac_part);
+        s.push(as<char>('0' + digit));
+        frac_part = frac_part - as<float>(digit);
+    }
+
+    return s;
+}
+
+string boolean_to_string(boolean x)
+{
+    if (x) {
+        return "true";
+    } else {
+        return "false";
+    }
+}
+
+
+void print(string s)
+{
+    for (int i = 0; i < s.size; i++) {
+        write_chr(s.get(i));
+    }
+    write_chr('\n');
+}
