@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "muni2wasm"
-version = "0.1.2.post0"
+version = "0.1.3.post0"
 description = "Muni compiler frontend targeting WebAssembly"
 readme = "README.md"
 license = "MIT"
