@@ -217,33 +217,51 @@ class CodeGen:
 
     
         # 7) emit each concrete instantiation:
-        for struct_name, targs in list(self.struct_insts):
-            # find the StructureDeclaration
-            sd = next(d for d in self.program.decls
-                    if isinstance(d, StructureDeclaration) and d.name == struct_name)
-            # build TypeExpr list
-            tas = [TypeExpr(n) for n in targs]
+        processed_structs = set()
+        changed = True
+        while changed:
+            changed = False
+            for struct_name, targs in list(self.struct_insts):
+                key = (struct_name, targs)
+                if key in processed_structs:
+                    continue
 
-            # 7a) static constructor for this instantiation
-            ctor = next((m for m in sd.methods if m.is_static and m.name == struct_name), None)
-            if ctor:
-                self.gen_method(struct_name, ctor, type_args=tas)
+                sd = next(d for d in self.program.decls
+                        if isinstance(d, StructureDeclaration) and d.name == struct_name)
+                tas = [TypeExpr(n) for n in targs]
 
-            # 7b) instance methods for this instantiation
-            for m in sd.methods:
-                if not m.is_static:
-                    self.gen_method(struct_name, m, type_args=tas)
+                # 7a) constructor
+                ctor = next((m for m in sd.methods if m.is_static and m.name == struct_name), None)
+                if ctor:
+                    self.gen_method(struct_name, ctor, type_args=tas)
 
-            # 7c) any other static helpers (e.g. static methods not named ctor)
-            for m in sd.methods:
-                if m.is_static and m.name != struct_name:
-                    self.gen_method(struct_name, m, type_args=tas)
+                # 7b) instance methods
+                for m in sd.methods:
+                    if not m.is_static:
+                        self.gen_method(struct_name, m, type_args=tas)
+
+                # 7c) other static methods
+                for m in sd.methods:
+                    if m.is_static and m.name != struct_name:
+                        self.gen_method(struct_name, m, type_args=tas)
+
+                processed_structs.add(key)
+                changed = True
 
         # 8) monomorphize any generic free functions
-        for fn, targs in list(self.fn_insts):
-            fd = next(f for f in self.program.decls
-                    if isinstance(f, FunctionDeclaration) and f.name == fn)
-            self.gen_func(fd, type_args=[TypeExpr(n) for n in targs])
+        processed_funcs = set()
+        changed = True
+        while changed:
+            changed = False
+            for fn, targs in list(self.fn_insts):
+                key = (fn, targs)
+                if key in processed_funcs:
+                    continue
+                fd = next(f for f in self.program.decls
+                        if isinstance(f, FunctionDeclaration) and f.name == fn)
+                self.gen_func(fd, type_args=[TypeExpr(n) for n in targs])
+                processed_funcs.add(key)
+                changed = True
 
         # 9) export main if present
         if any(isinstance(d, FunctionDeclaration) and d.name == "main"
@@ -489,11 +507,18 @@ class CodeGen:
         # Bare FunctionCall
         if isinstance(stmt, FunctionCall):
             self.gen_expr(stmt)
+            rt = self._func_return_type(stmt.name)
+            if rt.name != "void":
+                self.emit("drop")
             return
 
         # Bare MethodCall
         if isinstance(stmt, MethodCall):
             self.gen_expr(stmt)
+            rt = self._method_return_type(stmt.struct.name, stmt.method,  # type: ignore
+                                  is_static=isinstance(stmt.receiver, Ident) and stmt.receiver.name == stmt.struct.name)  # type: ignore
+            if rt.name != "void":
+                self.emit("drop")
             return
 
         # IfStmt
@@ -848,17 +873,6 @@ class CodeGen:
                     lt = getattr(expr.left, "type", TypeExpr("int"))
                     rt = getattr(expr.right, "type", TypeExpr("int"))
 
-                    # If either side is float/int/bool only → primitive compare
-                    is_prim_l = (lt.name in ("int", "boolean", "float"))
-                    is_prim_r = (rt.name in ("int", "boolean", "float"))
-
-                    # If both primitives → keep previous behavior
-                    if is_prim_l and is_prim_r:
-                        self.gen_expr(expr.left)
-                        self.gen_expr(expr.right)
-                        self.emit(CMP_MAP[op][lty])
-                        return
-
                     # If both are the same struct type (including generics)
                     if self._is_struct_type(lt) and lt.name == getattr(rt, "name", None):
                         base = lt.name
@@ -898,6 +912,29 @@ class CodeGen:
 
             # arithmetic +, -, *
             if op in BINOP_MAP:
+                lt = getattr(expr.left, "type", TypeExpr("int"))
+                rt = getattr(expr.right, "type", TypeExpr("int"))
+
+                if self._is_struct_type(lt) and lt.name == getattr(rt, "name", None):
+                    base = lt.name
+                    # If the struct defines instance _<op>, call it
+                    method_name = {"+": "add", "-": "sub", "*": "mul", "/": "div"}.get(op)
+                    if method_name:
+                        # Register monomorph instantiation (generic support)
+                        targs = [self._remap_ty(p) for p in lt.params]
+                        key = (base, tuple(ta.name for ta in targs))
+                        self.struct_insts[key] = True
+
+                        # Evaluate receiver (left) and stash, then call with (this, right)
+                        self.gen_expr(expr.left)
+                        self.emit("local.set $__arr_ptr")
+                        self.emit("local.get $__arr_ptr")
+                        self.gen_expr(expr.right)
+
+                        mangled = self._mangle(f"{base}__{method_name}", targs)
+                        self.emit(f"call ${mangled}")
+                        return
+                
                 self.gen_expr(expr.left)
                 self.gen_expr(expr.right)
                 self.emit(BINOP_MAP[op][lty])
@@ -1329,6 +1366,20 @@ class CodeGen:
             if isinstance(d, StructureDeclaration) and d.name == struct_name:
                 return any((not m.is_static) and m.name == method_name for m in d.methods)
         return False
+    
+
+    def _func_return_type(self, name: str):
+        fd = next((d for d in self.program.decls
+                if isinstance(d, FunctionDeclaration) and d.name == name), None)
+        return fd.return_type if fd else TypeExpr("void")
+
+    def _method_return_type(self, struct_name: str, method: str, is_static: bool):
+        sd = next((d for d in self.program.decls
+                if isinstance(d, StructureDeclaration) and d.name == struct_name), None)
+        if not sd: return TypeExpr("void")
+        md = next((m for m in sd.methods if (m.is_static == is_static and m.name == method)), None)
+        return md.return_type if md else TypeExpr("void")
+
 WASM_TY = {
 "int": "i32",
 "boolean": "i32",

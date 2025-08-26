@@ -155,20 +155,9 @@ void main() {
 ("""
 int foo() { return 1; }
 int foo() { return 2; }
- void main() {}
+void main() {}
 """, "redefinition"),
 
-# main with wrong signature (non-void return or params)
-("""
-int main() {
-    return 0;
-}
-""", "main"),
-(
-"""
-void main(int x) {
-}
-""", "main"),
 ]
 
 @pytest.mark.parametrize("src,needle", compile_err_cases)

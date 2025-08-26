@@ -116,6 +116,38 @@ void main() {
     }
     write_int(sum);
 }""", ["6"]),
+
+
+# Floats!
+
+# addition and subtraction
+("""
+void main() {
+    float x = 1.5;
+    float y = 2.5;
+    write_flt(x + y);
+    write_flt(x - y);
+}
+""", ["4.0", "-1.0"]),
+
+# multiplication and division
+("""
+void main() {
+    float x = 1.5;
+    float y = 2.5;
+    write_flt(x * y);
+    write_flt(x / y);
+}
+""", ["3.75", "0.6000000238418579"]),
+
+# unary minus
+("""
+void main() {
+    float x = 1.5;
+    write_flt(-x);
+}
+""", ["-1.5"]),
+
 ]
 
 @pytest.mark.parametrize("src,expected", ok_cases)

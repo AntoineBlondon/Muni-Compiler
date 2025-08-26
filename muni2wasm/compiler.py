@@ -10,7 +10,6 @@ import tempfile
 import os
 from pathlib import Path
 
-import typer
 from wabt import Wabt
 from wasmtime import Memory, Store, Linker, Module
 
@@ -36,12 +35,12 @@ def dump_hex(mem: Memory, store: Store, start=0, length=128):
 
 
 
-def compile_to_wat(source: str) -> str:
+def compile_to_wat(source: str, input_path: str) -> str:
     tokens = tokenize(source)
     ast = Parser(tokens).parse()
 
     ast, lib_seen = import_standard_lib(ast)  # type: ignore
-    ast, _ = inline_file_imports(ast, Path(source).parent, lib_seen)
+    ast, _ = inline_file_imports(ast, Path(input_path).parent, lib_seen)
 
     SemanticChecker(ast).check()
     return CodeGen(ast).gen()
@@ -51,7 +50,7 @@ def compile_file(input_path: str, output_path: str) -> None:
     inp = Path(input_path)
     out = Path(output_path)
     src = inp.read_text(encoding="utf-8")
-    wat = compile_to_wat(src)
+    wat = compile_to_wat(src, input_path=input_path)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     ext = out.suffix.lower()

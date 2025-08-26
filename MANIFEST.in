@@ -1,1 +1,2 @@
 include muni2wasm/lib/*.mun
+include muni2wasm/lib/std_dep/*.mun

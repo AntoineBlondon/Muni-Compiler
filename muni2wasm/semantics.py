@@ -61,17 +61,6 @@ class SemanticChecker:
     def check(self):
         self.decompose_program()
 
-        for struct_decl in self.struct_decls:
-            name = struct_decl.name
-            if name in self.struct_templates:
-                raise SemanticError(f"Redefinition of structure '{name}'", struct_decl.pos)
-            self.struct_templates[name] = (
-                struct_decl.type_params,
-                struct_decl
-            )
-        
-
-
         self.validate_struct_templates()
 
         self.build_global_function_signatures()
@@ -85,10 +74,6 @@ class SemanticChecker:
         for (struct_name, type_args) in list(self.checked_struct_insts):
             self.instantiate_struct(struct_name, list(type_args))
         
-        if "main" in self.func_sigs and self.top_stmts:
-            raise SemanticError("Top-level statements not allowed when 'main' is defined", self.top_stmts[0].pos)
-        if self.top_stmts and "main" not in self.func_sigs:
-            self.check_block(self.top_stmts, {}, expected_ret=TypeExpr("void"), in_loop=False)
         
         for fd in self.func_decls:
             if fd.type_params:
@@ -97,8 +82,6 @@ class SemanticChecker:
             self.check_block(fd.body, sym, expected_ret=fd.return_type, in_loop=False)
 
             # ensure non-void returns on every path
-            
-
             if fd.return_type != TypeExpr("void") and not self.block_returns(fd.body):
                 raise SemanticError(f"Function '{fd.name}' may exit without returning a value", fd.pos)
         
@@ -117,10 +100,7 @@ class SemanticChecker:
         self.func_decls = [d for d in self.program.decls if isinstance(d, FunctionDeclaration)]
         self.struct_decls = [d for d in self.program.decls if isinstance(d, StructureDeclaration)]
         self.raw_aliases = [d for d in self.program.decls if isinstance(d, AliasDeclaration)]
-        self.top_stmts = [
-            d for d in self.program.decls
-            if not isinstance(d, (ImportDeclaration, FunctionDeclaration, StructureDeclaration, AliasDeclaration))
-        ]
+
 
         self.define_char_and_string()
 
@@ -166,8 +146,6 @@ class SemanticChecker:
         for fd in self.func_decls:
             for stmt in fd.body:
                 self.rewrite_types_in_stmt(stmt)
-        for stmt in self.top_stmts:
-            self.rewrite_types_in_stmt(stmt)
         for sd in self.struct_decls:
             for m in sd.methods:
                 for stmt in m.body:
@@ -301,6 +279,15 @@ class SemanticChecker:
         raise SemanticError(f"Unknown type '{typ}'", typ.pos)
 
     def validate_struct_templates(self):
+        for struct_decl in self.struct_decls:
+            name = struct_decl.name
+            if name in self.struct_templates:
+                raise SemanticError(f"Redefinition of structure '{name}'", struct_decl.pos)
+            self.struct_templates[name] = (
+                struct_decl.type_params,
+                struct_decl
+            )
+
         for struct_name, (type_params, struct_decl) in self.struct_templates.items():
             # static fields
             for static_field in struct_decl.static_fields:
@@ -328,20 +315,15 @@ class SemanticChecker:
                     self.check_type_with_scope(param_type, scope_vars)
 
     def check_main_signature(self):
+        if "main" not in self.func_sigs:
+            raise SemanticError("Missing 'main' function", None)
         params = self.func_sigs["main"][1]
-        # Main function must have no parameters
         if len(params) != 0:
             raise SemanticError("Invalid 'main' function signature: 'main' must have no parameters", None)
-        # Main function must return void
         if self.func_sigs["main"][2] != TypeExpr("void"):
             raise SemanticError("Invalid 'main' function signature: 'main' must return void", None)
 
     def build_global_function_signatures(self):
-        for imp in self.imports:
-            if imp.name in self.func_sigs:
-                raise SemanticError(f"Redefinition of function '{imp.name}'", imp.pos)
-            self.func_sigs[imp.name] = (imp.type_params, imp.params, imp.return_type)
-
         for function_declaration in self.func_decls:
             if function_declaration.name in self.func_sigs:
                 raise SemanticError(f"Redefinition of function '{function_declaration.name}'", function_declaration.pos)
@@ -351,6 +333,12 @@ class SemanticChecker:
                 param_types,
                 function_declaration.return_type
             )
+            
+        for imp in self.imports:
+            if imp.name in self.func_sigs:
+                raise SemanticError(f"Redefinition of function '{imp.name}'", imp.pos)
+            self.func_sigs[imp.name] = (imp.type_params, imp.params, imp.return_type)
+
         self.generic_functions = { f.name for f in self.func_decls if f.type_params }
 
     def subst(self, ty: TypeExpr, substitution_map: dict[str, TypeExpr]) -> TypeExpr:
@@ -637,15 +625,32 @@ class SemanticChecker:
                     return self.mark(expr, TypeExpr("int"))
                 elif lt == TypeExpr("float") and expr.op != "%":
                     return self.mark(expr, TypeExpr("float"))
-                else:
-                    raise SemanticError(f"Binary operator '{expr.op}' expects int or float, got {lt}", pos)
+                #check if structure has a _add method
+                elif lt in self.structs:
+                    tparams, struct_decl = self.struct_templates[lt.name]
+                    mname = self._op_method_name(expr.op)
+                    method = next((m for m in struct_decl.methods if m.name == mname and not m.is_static), None)
+                    if method is None:
+                        raise SemanticError(f"Structure '{lt}' has no method for {expr.op}", pos)
+
+                    subst_map = dict(zip(tparams, lt.params))
+                    ret_ty = self.subst(method.return_type, subst_map)   # SPECIALIZE here
+                    return self.mark(expr, ret_ty)
+                raise SemanticError(f"Arithmetic operator '{expr.op}' expects int, float or structure, got {lt}", pos)
             elif expr.op in ("+=", "-=", "*=", "/=", "%="):
                 if lt == TypeExpr("int"):
                     return self.mark(expr, TypeExpr("int"))
                 elif lt == TypeExpr("float") and expr.op != "%=":
                     return self.mark(expr, TypeExpr("float"))
-                else:
-                    raise SemanticError(f"Compound assignment operator '{expr.op}' expects int or float, got {lt}", pos)
+                elif lt in self.structs:
+                    tparams, struct_decl = self.struct_templates[lt.name]
+                    mname = self._op_method_name(expr.op)
+                    method = next((m for m in struct_decl.methods if m.name == mname and not m.is_static), None)
+                    if method is None:
+                        raise SemanticError(f"Structure '{lt}' has no method for {expr.op}", pos)
+                    ret_ty = self.subst(method.return_type, dict(zip(tparams, lt.params)))
+                    return self.mark(expr, ret_ty)
+                raise SemanticError(f"Compound assignment operator '{expr.op}' expects int, float or structure, got {lt}", pos)
             elif expr.op in (">", "<", ">=", "<=", "==", "!="):
                 if lt in [TypeExpr("int"), TypeExpr("float")]:
                     return self.mark(expr, TypeExpr("boolean"))
@@ -915,3 +920,12 @@ class SemanticChecker:
         if src.name not in ("int","float","boolean","void") and dst == TypeExpr("boolean"):
             return True
         return False
+
+    def _op_method_name(self, op: str) -> str:
+        # arithmetic
+        if op in ("+", "+="): return "_add"
+        if op in ("-", "-="): return "_sub"
+        if op in ("*", "*="): return "_mul"
+        if op in ("/", "/="): return "_div"
+        if op in ("%", "%="): return "_mod"
+        raise SemanticError(f"Unknown operator '{op}'")
