@@ -48,7 +48,7 @@ Use `--debug` to see full Python tracebacks on errors.
 
 ## The Muni language
 
-> This implementation is quite old and doesn't follow the [specifications](https://github.com/AntoineBlondon/Muni-Compiler/the_muni_specifications-V1.pdf) perfectly, I am currently rewriting the compiler to be complient with Version 1.
+> This implementation is quite old and doesn't follow the [specifications](the_muni_specifications-V1.pdf) perfectly, I am currently rewriting the compiler to be complient with Version 1.
 
 ### Types
 
